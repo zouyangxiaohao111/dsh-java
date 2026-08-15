@@ -199,7 +199,8 @@ public final class Fiber {
             this.store = null;
             if (Objects.equals(this.epoch, INACTIVE)) {
                 this.inertia = null;
-                if (this.uid != 0) this.state = FiberState.UNLOADING;
+                // fiber.ts:_getState — no pending reload: FAILED if errored, else PENDING
+                this.state = this._error != null ? FiberState.FAILED : FiberState.PENDING;
             } else {
                 this.state = FiberState.LOADING;
                 this.inertia = this.reload();
