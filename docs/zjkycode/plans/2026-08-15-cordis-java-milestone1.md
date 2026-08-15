@@ -1382,6 +1382,14 @@ public final class Fiber {
         if (Objects.equals(this.epoch, oldEpoch)) {
             this.state = FiberState.ACTIVE;
             this.inertia = null;
+            // fiber.ts:_updateState — notify dependents of services this fiber provides
+            if (this.store != null) {
+                List<String> provided = new ArrayList<>();
+                for (Map.Entry<String, Reflect.Impl> e : this.store.entrySet()) {
+                    if (e.getValue() != null && e.getValue().fiber == this) provided.add(e.getKey());
+                }
+                if (!provided.isEmpty()) this.ctx.reflect.notify(provided);
+            }
         } else {
             this.state = FiberState.UNLOADING;
             this.unload();   // unload() 自己管理 this.inertia
