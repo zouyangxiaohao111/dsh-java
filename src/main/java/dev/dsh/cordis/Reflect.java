@@ -10,7 +10,7 @@ public final class Reflect {
     /** A concrete service implementation record (reflect.ts:116-125). */
     public static final class Impl {
         public final String name;
-        public final Object value;
+        public Object value;
         public final Fiber fiber;
         public final Predicate<Object> check;
         public Impl(String name, Object value, Fiber fiber, Predicate<Object> check) {
@@ -77,10 +77,14 @@ public final class Reflect {
     /** Register a service impl owned by the current fiber (reflect.ts:277-305). */
     public Disposable provide(String name, Object value, Predicate<Object> check) {
         return this.ctx.fiber.effect(() -> {
+            Property existing = props.get(name);
+            if (existing != null && !(existing instanceof Property.Service)) {
+                throw new IllegalStateException("property \"" + name + "\" is already declared as accessor");
+            }
             props.putIfAbsent(name, new Property.Service());
-            this.ctx.root.isolate.computeIfAbsent(name, k -> name); // ensure root default label
-            String key = effectiveIsolate(name);
-            if (key == null) key = name;
+            this.ctx.root.isolate.computeIfAbsent(name, k -> "\u0000" + k); // ensure root default label
+            String resolved = effectiveIsolate(name);
+            String key = resolved != null ? resolved : name;
             Impl impl = new Impl(name, value, this.ctx.fiber, check);
             if (store.containsKey(key)) {
                 throw new IllegalStateException("service \"" + name + "\" has been registered at <" + store.get(key).fiber.name() + ">");
@@ -113,7 +117,7 @@ public final class Reflect {
     }
 
     private boolean isolateMatches(Context fiberCtx, String name) {
-        return effectiveIsolateFor(fiberCtx, name).equals(effectiveIsolate(name));
+        return Objects.equals(effectiveIsolateFor(fiberCtx, name), effectiveIsolate(name));
     }
 
     private String effectiveIsolateFor(Context c, String name) {
@@ -128,7 +132,7 @@ public final class Reflect {
     /** Define a computed context property (reflect.ts:345-353). */
     public Disposable accessor(String name, Property.Accessor options) {
         return this.ctx.fiber.effect(() -> {
-            if (props.containsKey(name)) throw new IllegalStateException("property \"" + name + "\" is already declared");
+            if (props.containsKey(name)) throw new IllegalStateException("property \"" + name + "\" is already declared as " + (props.get(name) instanceof Property.Service ? "service" : "accessor"));
             props.put(name, options);
             return Disposable.of(() -> props.remove(name));
         }, "ctx.accessor(" + name + ")");
