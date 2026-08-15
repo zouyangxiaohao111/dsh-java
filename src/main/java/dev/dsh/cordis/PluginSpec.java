@@ -4,7 +4,7 @@ import java.util.*;
 
 /** Mutable fluent plugin descriptor; identity is the registry key. */
 public final class PluginSpec<T> implements Plugin<T> {
-    private final PluginApply<T> apply;
+    private final PluginApply<T> entrypoint;
     private String name;
     private final List<String> inject = new ArrayList<>();
     private final List<String> provide = new ArrayList<>();
@@ -16,7 +16,7 @@ public final class PluginSpec<T> implements Plugin<T> {
         void apply(Context ctx, T config) throws Exception;
     }
 
-    private PluginSpec(PluginApply<T> apply) { this.apply = apply; }
+    private PluginSpec(PluginApply<T> apply) { this.entrypoint = apply; }
 
     public static <T> PluginSpec<T> of(PluginApply<T> apply) { return new PluginSpec<>(apply); }
 
@@ -30,7 +30,8 @@ public final class PluginSpec<T> implements Plugin<T> {
     @Override public String[] inject() { return inject.toArray(String[]::new); }
     @Override public String[] provide() { return provide.toArray(String[]::new); }
     @Override public ConfigValidator<T> config() { return config; }
-    @Override public void apply(Context ctx, T config) throws Exception { apply.apply(ctx, config); }
-
-    Map<String, Object> injectConfigMap() { return injectConfig; }
+    @Override public void apply(Context ctx, T config) throws Exception { entrypoint.apply(ctx, config); }
+    @Override public Map<String, Object> injectConfig() {
+        return Collections.unmodifiableMap(injectConfig);
+    }
 }

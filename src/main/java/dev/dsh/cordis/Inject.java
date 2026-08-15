@@ -12,11 +12,11 @@ public final class Inject {
     public static Inject of(String... names) {
         Map<String, Object> m = new LinkedHashMap<>();
         for (String n : names) m.put(n, null);
-        return new Inject(m);
+        return new Inject(Collections.unmodifiableMap(m));
     }
 
     public static Inject config(Map<String, Object> nameToConfig) {
-        return new Inject(new LinkedHashMap<>(nameToConfig));
+        return new Inject(Collections.unmodifiableMap(new LinkedHashMap<>(nameToConfig)));
     }
 
     /** Merge own entries over inherited ones (registry.ts:71-89). */

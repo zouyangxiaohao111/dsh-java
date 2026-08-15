@@ -1,5 +1,7 @@
 package dev.dsh.cordis;
 
+import java.util.Map;
+
 /** Plugin entrypoint (registry.ts:92-146).
  *  Call `apply(ctx, config)` when all declared deps are available. */
 public interface Plugin<T> {
@@ -10,6 +12,9 @@ public interface Plugin<T> {
 
     /** Services this plugin requires; it only loads while all are available. */
     default String[] inject() { return new String[0]; }
+
+    /** Service name → intercept config dependencies (map form). */
+    default Map<String, Object> injectConfig() { return Map.of(); }
 
     /** Service name(s) this plugin provides. */
     default String[] provide() { return new String[0]; }

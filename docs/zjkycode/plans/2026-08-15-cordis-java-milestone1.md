@@ -456,11 +456,11 @@ public final class Inject {
     public static Inject of(String... names) {
         Map<String, Object> m = new LinkedHashMap<>();
         for (String n : names) m.put(n, null);
-        return new Inject(m);
+        return new Inject(Collections.unmodifiableMap(m));
     }
 
     public static Inject config(Map<String, Object> nameToConfig) {
-        return new Inject(new LinkedHashMap<>(nameToConfig));
+        return new Inject(Collections.unmodifiableMap(new LinkedHashMap<>(nameToConfig)));
     }
 
     /** Merge own entries over inherited ones (registry.ts:71-89). */
@@ -477,6 +477,8 @@ public final class Inject {
 ```java
 package dev.dsh.cordis;
 
+import java.util.Map;
+
 /** Plugin entrypoint (registry.ts:92-146).
  *  Call `apply(ctx, config)` when all declared deps are available. */
 public interface Plugin<T> {
@@ -487,6 +489,9 @@ public interface Plugin<T> {
 
     /** Services this plugin requires; it only loads while all are available. */
     default String[] inject() { return new String[0]; }
+
+    /** Service name → intercept config dependencies (map form). */
+    default Map<String, Object> injectConfig() { return Map.of(); }
 
     /** Service name(s) this plugin provides. */
     default String[] provide() { return new String[0]; }
@@ -504,7 +509,7 @@ import java.util.*;
 
 /** Mutable fluent plugin descriptor; identity is the registry key. */
 public final class PluginSpec<T> implements Plugin<T> {
-    private final PluginApply<T> apply;
+    private final PluginApply<T> entrypoint;
     private String name;
     private final List<String> inject = new ArrayList<>();
     private final List<String> provide = new ArrayList<>();
@@ -516,7 +521,7 @@ public final class PluginSpec<T> implements Plugin<T> {
         void apply(Context ctx, T config) throws Exception;
     }
 
-    private PluginSpec(PluginApply<T> apply) { this.apply = apply; }
+    private PluginSpec(PluginApply<T> apply) { this.entrypoint = apply; }
 
     public static <T> PluginSpec<T> of(PluginApply<T> apply) { return new PluginSpec<>(apply); }
 
@@ -530,12 +535,13 @@ public final class PluginSpec<T> implements Plugin<T> {
     @Override public String[] inject() { return inject.toArray(String[]::new); }
     @Override public String[] provide() { return provide.toArray(String[]::new); }
     @Override public ConfigValidator<T> config() { return config; }
-    @Override public void apply(Context ctx, T config) throws Exception { apply.apply(ctx, config); }
-
-    Map<String, Object> injectConfigMap() { return injectConfig; }
+    @Override public void apply(Context ctx, T config) throws Exception { entrypoint.apply(ctx, config); }
+    @Override public Map<String, Object> injectConfig() {
+        return Collections.unmodifiableMap(injectConfig);
+    }
 }
 ```
-> 移植说明:类插件(`class X implements Plugin<T>` + `@Inject` 注解)在 M1 不做注解扫描——统一用 `PluginSpec.of` / `Plugin` 接口 + `inject()`/`provide()`/`config()` 默认方法表达,类插件重写这些方法即可。注解形态(对应 `@Inject` 装饰器)留待后续。
+> 移植说明:类插件(`class X implements Plugin<T>` + `@Inject` 注解)在 M1 不做注解扫描——统一用 `PluginSpec.of` / `Plugin` 接口 + `inject()`/`injectConfig()`/`provide()`/`config()` 默认方法表达,类插件重写这些方法即可。注解形态(对应 `@Inject` 装饰器)留待后续。
 
 **测试:** `PluginTest.java` 验证 fluent builder 元数据:
 ```java
@@ -552,6 +558,29 @@ class PluginTest {
         assertThat(p.name()).isEqualTo("greeter");
         assertThat(p.inject()).containsExactly("counter");
         assertThat(p.provide()).containsExactly("out");
+    }
+
+    @Test
+    void injectResolveMergesOwnOverInherited() {
+        java.util.Map<String, Object> inherited = new java.util.LinkedHashMap<>();
+        inherited.put("a", "old");
+        java.util.Map<String, Object> merged = Inject.resolve(Inject.of("a", "b"), inherited);
+        assertThat(merged).containsEntry("a", null); // own(null) 覆盖 inherited
+        assertThat(merged).containsEntry("b", null);
+    }
+
+    @Test
+    void injectConfigMapForm() {
+        java.util.Map<String, Object> cfg = new java.util.LinkedHashMap<>();
+        cfg.put("a", 1);
+        java.util.Map<String, Object> merged = Inject.resolve(Inject.config(cfg), java.util.Map.of());
+        assertThat(merged).containsEntry("a", 1);
+    }
+
+    @Test
+    void specAccumulatesInjectConfig() {
+        PluginSpec<Void> p = PluginSpec.of((ctx, cfg) -> {}).injectConfig("a", 1).injectConfig("b", 2);
+        assertThat(p.injectConfig()).containsEntry("a", 1).containsEntry("b", 2);
     }
 }
 ```
@@ -1725,7 +1754,7 @@ public final class Registry {
 
         Map<String, Object> injectMap = new LinkedHashMap<>();
         for (String name : plugin.inject()) injectMap.put(name, null);
-        if (plugin instanceof PluginSpec<?> spec) injectMap.putAll(spec.injectConfigMap());
+        injectMap.putAll(plugin.injectConfig());
 
         Fiber fiber = new Fiber(this.ctx, config, injectMap, runtime);
         runtime.fibers.push(fiber);
