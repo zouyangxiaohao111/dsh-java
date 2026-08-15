@@ -177,7 +177,10 @@ public interface Disposable {
     CompletableFuture<Void> dispose();
 
     static Disposable of(Runnable run) {
-        return () -> { run.run(); return CompletableFuture.completedFuture(null); };
+        return () -> {
+            try { run.run(); return CompletableFuture.completedFuture(null); }
+            catch (Throwable t) { return CompletableFuture.failedFuture(t); }
+        };
     }
 
     static Disposable none() {
@@ -205,14 +208,16 @@ public final class DisposableList<T> implements Iterable<T> {
         long id = ++sn;
         map.put(id, value);
         index.put(value, id);
-        return () -> map.remove(id);
+        return () -> {
+            map.remove(id);
+            index.remove(value, id); // 只在该 id 仍映射此值时清除
+        };
     }
 
     public boolean delete(T value) {
         Long id = index.remove(value);
         if (id == null) return false;
-        map.remove(id);
-        return true;
+        return map.remove(id) != null; // 对齐 JS map.delete(sn) 返回值
     }
 
     /** Remove everything; returns values in REVERSE insertion order (for reverse cleanup). */
@@ -255,8 +260,7 @@ package dev.dsh.cordis.util;
 public final class Errors {
     private Errors() {}
 
-    /** Run `body`; if it throws or returns a failed CompletableFuture,
-     *  wrap the cause so it surfaces as a CordisError with context. */
+    /** Run `body`; if it throws, surface it as a RuntimeException. */
     public static <T> T compose(FallibleSupplier<T> body) {
         try {
             return body.get();

@@ -8,7 +8,10 @@ public interface Disposable {
     CompletableFuture<Void> dispose();
 
     static Disposable of(Runnable run) {
-        return () -> { run.run(); return CompletableFuture.completedFuture(null); };
+        return () -> {
+            try { run.run(); return CompletableFuture.completedFuture(null); }
+            catch (Throwable t) { return CompletableFuture.failedFuture(t); }
+        };
     }
 
     static Disposable none() {

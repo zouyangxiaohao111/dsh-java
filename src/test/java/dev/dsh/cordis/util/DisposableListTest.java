@@ -22,5 +22,12 @@ class DisposableListTest {
         assertThat(list.length()).isEqualTo(1);
         remove.run(); // remover also works
         assertThat(list.length()).isZero();
+        assertThat(list.delete("b")).isFalse(); // 修复后应为 false(remover 已删)
+    }
+
+    @Test
+    void deleteMissingReturnsFalse() {
+        DisposableList<String> list = new DisposableList<>();
+        assertThat(list.delete("nope")).isFalse();
     }
 }

@@ -15,14 +15,16 @@ public final class DisposableList<T> implements Iterable<T> {
         long id = ++sn;
         map.put(id, value);
         index.put(value, id);
-        return () -> map.remove(id);
+        return () -> {
+            map.remove(id);
+            index.remove(value, id); // 只在该 id 仍映射此值时清除
+        };
     }
 
     public boolean delete(T value) {
         Long id = index.remove(value);
         if (id == null) return false;
-        map.remove(id);
-        return true;
+        return map.remove(id) != null; // 对齐 JS map.delete(sn) 返回值
     }
 
     /** Remove everything; returns values in REVERSE insertion order (for reverse cleanup). */
