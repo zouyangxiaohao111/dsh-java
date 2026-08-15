@@ -23,8 +23,8 @@ public final class Context {
     /** Listener filter consulted on event dispatch (reflect.ts proxy filter). */
     public Predicate<Context> filter;
 
-    /** The fiber owning this context. */
-    public final Fiber fiber;
+    /** The fiber owning this context (rebound to the plugin fiber by the Fiber ctor). */
+    public Fiber fiber;
     public final Reflect reflect;
     public final Registry registry;
     public final Events events;
@@ -88,10 +88,11 @@ public final class Context {
             return (T) acc.get.apply(this, this.receiver);
         }
         if (this.fiber.runtime == null) {
-            return this.reflect.get(name, false);
+            return this.reflect.get(this, name, false);
         }
         Context ctx = this.shadow != null ? this.shadow : this;
         Fiber f = ctx.fiber;
+        String key = Reflect.effectiveIsolate(this, name);
         while (true) {
             Reflect.Impl impl = f.store == null ? null : f.store.get(name);
             if (impl != null) return (T) impl.value;
@@ -100,15 +101,15 @@ public final class Context {
                         "cannot get required service \"" + name + "\" in inactive context");
             }
             if (f.runtime == null) break;
-            if (!Objects.equals(f.parent.isolate.get(name), this.isolate.get(name))) break;
+            if (!Objects.equals(Reflect.effectiveIsolate(f.parent, name), key)) break;
             f = f.parent.fiber;
         }
-        return this.reflect.get(name, false);
+        return this.reflect.get(this, name, false);
     }
 
     /** Overwrite a provided service's value. */
     public void set(String name, Object value) {
-        this.reflect.set(name, value);
+        this.reflect.set(this, name, value);
     }
 
     /** Register a service implementation owned by the current fiber (reflect.ts:277). */
@@ -117,7 +118,7 @@ public final class Context {
     }
 
     public Disposable provide(String name, Object value, Predicate<Object> check) {
-        return this.reflect.provide(name, value, check);
+        return this.reflect.provide(this, name, value, check);
     }
 
     // ---- events (mixins made static; events.ts mixed onto ctx) ----
@@ -157,11 +158,11 @@ public final class Context {
     // ---- registry (mixins made static) ----
 
     public Fiber plugin(Plugin<?> plugin, Object config) {
-        return this.registry.plugin(plugin, config);
+        return this.registry.plugin(this, plugin, config);
     }
 
     public Fiber inject(Inject deps, PluginSpec.PluginApply<Void> callback) {
-        return this.registry.inject(deps, callback);
+        return this.registry.inject(this, deps, callback);
     }
 
     // ---- effects ----
