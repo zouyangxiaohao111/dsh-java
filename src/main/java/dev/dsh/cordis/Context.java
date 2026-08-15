@@ -124,15 +124,15 @@ public final class Context {
     // ---- events (mixins made static; events.ts mixed onto ctx) ----
 
     public Disposable on(String name, Events.Listener listener) {
-        return this.events.on(name, listener, new Events.EventOptions());
+        return this.events.on(this, name, listener, new Events.EventOptions());
     }
 
     public Disposable on(String name, Events.Listener listener, Events.EventOptions opts) {
-        return this.events.on(name, listener, opts);
+        return this.events.on(this, name, listener, opts);
     }
 
     public Disposable once(String name, Events.Listener listener, Events.EventOptions opts) {
-        return this.events.once(name, listener, opts);
+        return this.events.once(this, name, listener, opts);
     }
 
     public void emit(String name, Object... args) {

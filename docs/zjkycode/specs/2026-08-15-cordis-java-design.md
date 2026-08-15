@@ -95,7 +95,7 @@ plugin() → Fiber(PENDING)
    → 逐依赖 _checkImpl(name):从 Reflect 解析服务,缺失则保持 PENDING
    → 全部就绪 → _refresh():epoch = join(各依赖 impl.fiber.uid)
    → epoch 由 INACTIVE 变有效 → _reload():
-         internal/config waterfall 解析 config → apply(ctx, config)
+         internal/config waterfall 解析 config → apply(ctx, config)  (M1 裁剪:钩子未接线,M2 回填;当前 `resolveConfig`/`update` 走简化路径)
          → 插件内 effect()/on()/provide() 全部注册到本 fiber → ACTIVE
 
 服务变更时(provide/unprovide):
@@ -106,7 +106,7 @@ dispose():
    → disposers 反序清理(对应 fiber.ts:675)→ DISPOSED
 ```
 
-异步:插件 `apply` 可返回 `void` 或 `CompletableFuture<?>`;disposer 可返回 `void` 或 `CompletableFuture<Void>`;`fiber.await()/dispose()/update()` 均返回 `CompletableFuture`。
+异步:插件 `apply` 可返回 `void` 或 `CompletableFuture<?>` **(M1 裁剪:当前 `Plugin.apply` 为 `void`,异步 apply M2 实现,需改签名)**;disposer 可返回 `void` 或 `CompletableFuture<Void>`;`fiber.await()/dispose()/update()` 均返回 `CompletableFuture`。
 
 ### 3.5 事件系统
 
@@ -162,3 +162,4 @@ JUnit 5 + AssertJ 测试覆盖("忠实"的验收标准):
 | epoch 重算与 JS 语义不完全一致 | 以 `fiber.ts` 为规格逐态对照,JUnit 覆盖状态转换 |
 | Java 强类型 vs 动态名字契约的张力 | 泛型 `<T> T get(String)` + accessor 接口层,不在契约层引入强类型服务 |
 | CompletableFuture 与事件循环语义 | 明确同步/异步边界;emit 同步、parallel/serial 异步 |
+| 已知简化(M1 裁剪) | `Plugin.apply` 为 `void`(异步 apply 需改签名,M2 实现);`internal/config`/`internal/update` waterfall 钩子未接线,当前 `resolveConfig`/`update` 走简化路径;监听器归属调用方 fiber 已接线(on/once caller-aware);fiber dispose 已从 `runtime.fibers` 除名;plugin() 已注册父 fiber 级联 dispose |

@@ -1,5 +1,7 @@
 package dev.dsh.cordis;
 
+import dev.dsh.cordis.util.Disposable;
+
 import java.util.*;
 
 /** Plugin registry installed as ctx.registry (registry.ts:195-337). */
@@ -58,6 +60,9 @@ public final class Registry {
 
         Fiber fiber = new Fiber(caller, config, injectMap, runtime);
         runtime.fibers.push(fiber);
+
+        // 级联:父 fiber 卸载时 dispose 本插件 fiber(fiber.ts:265)
+        caller.fiber.effect(() -> (Disposable) () -> fiber.dispose(), "ctx.plugin()");
 
         // publication + dependency resolution (fiber.ts:299-319)
         if (fiber.uid != 0 && caller.fiber.state != FiberState.UNLOADING) {

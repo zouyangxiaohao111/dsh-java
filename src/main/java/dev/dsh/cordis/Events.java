@@ -122,13 +122,13 @@ public final class Events {
         return next.get();
     }
 
-    /** Register a listener owned by the current fiber (events.ts:254-302). */
-    public Disposable on(String name, Listener listener, EventOptions opts) {
+    /** Register a listener owned by the calling fiber (events.ts:254-302). */
+    public Disposable on(Context caller, String name, Listener listener, EventOptions opts) {
         if (opts == null) opts = new EventOptions();
         final EventOptions options = opts;
-        return this.ctx.fiber.effect(() -> {
+        return caller.fiber.effect(() -> {
             List<Hook> list = hooks.computeIfAbsent(name, k -> new ArrayList<>());
-            Hook hook = new Hook(this.ctx, listener, options.prepend, options.global);
+            Hook hook = new Hook(caller, listener, options.prepend, options.global);
             if (options.prepend) list.add(0, hook); else list.add(hook);
             return Disposable.of(() -> {
                 list.remove(hook);
@@ -138,10 +138,11 @@ public final class Events {
     }
 
     /** Register a listener that disposes itself after the first call (events.ts:312-318). */
-    public Disposable once(String name, Listener listener, EventOptions opts) {
+    public Disposable once(Context caller, String name, Listener listener, EventOptions opts) {
         if (opts == null) opts = new EventOptions();
+        final EventOptions options = opts;
         Disposable[] self = new Disposable[1];
-        self[0] = on(name, (ctx, args) -> { self[0].dispose(); return listener.call(ctx, args); }, opts);
+        self[0] = on(caller, name, (ctx, args) -> { self[0].dispose(); return listener.call(ctx, args); }, options);
         return self[0];
     }
 

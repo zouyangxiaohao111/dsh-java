@@ -288,6 +288,9 @@ public final class Fiber {
         return done.thenAccept(v -> {
             this.state = FiberState.DISPOSED;
             this._error = null;
+            if (this.runtime != null) {
+                this.runtime.fibers.delete(this);   // 除名,防止 notify 复活(fiber.ts:266-275)
+            }
         });
     }
 

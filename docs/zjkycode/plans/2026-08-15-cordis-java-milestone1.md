@@ -905,13 +905,14 @@ public final class Events {
         return next.get();
     }
 
-    /** Register a listener owned by the current fiber (events.ts:254-302). */
-    public Disposable on(String name, Listener listener, EventOptions opts) {
+    /** Register a listener owned by the calling fiber (events.ts:254-302). */
+    public Disposable on(Context caller, String name, Listener listener, EventOptions opts) {
         if (opts == null) opts = new EventOptions();
-        return this.ctx.fiber.effect(() -> {
+        final EventOptions options = opts;
+        return caller.fiber.effect(() -> {
             List<Hook> list = hooks.computeIfAbsent(name, k -> new ArrayList<>());
-            Hook hook = new Hook(this.ctx, listener, opts.prepend, opts.global);
-            if (opts.prepend) list.add(0, hook); else list.add(hook);
+            Hook hook = new Hook(caller, listener, options.prepend, options.global);
+            if (options.prepend) list.add(0, hook); else list.add(hook);
             return Disposable.of(() -> {
                 list.remove(hook);
                 if (list.isEmpty()) hooks.remove(name);
@@ -920,10 +921,11 @@ public final class Events {
     }
 
     /** Register a listener that disposes itself after the first call (events.ts:312-318). */
-    public Disposable once(String name, Listener listener, EventOptions opts) {
+    public Disposable once(Context caller, String name, Listener listener, EventOptions opts) {
         if (opts == null) opts = new EventOptions();
+        final EventOptions options = opts;
         Disposable[] self = new Disposable[1];
-        self[0] = on(name, (ctx, args) -> { self[0].dispose(); return listener.call(ctx, args); }, opts);
+        self[0] = on(caller, name, (ctx, args) -> { self[0].dispose(); return listener.call(ctx, args); }, options);
         return self[0];
     }
 
@@ -1478,15 +1480,19 @@ public final class Fiber {
         return restart();
     }
 
-    /** Dispose this fiber: unload, then settle (fiber.ts:265-297, dispose). */
+    /** Dispose this fiber: unload, then settle once cleanup finished. */
     public CompletableFuture<Void> dispose() {
         if (this.state == FiberState.DISPOSED) return CompletableFuture.completedFuture(null);
         this.epoch = INACTIVE;   // unload 不得重载 ACTIVE fiber
         CompletableFuture<Void> done = unload();
-        return done.thenAccept(v -> { this.state = FiberState.DISPOSED; this.uidUnset(); });
+        return done.thenAccept(v -> {
+            this.state = FiberState.DISPOSED;
+            this._error = null;
+            if (this.runtime != null) {
+                this.runtime.fibers.delete(this);   // 除名,防止 notify 复活(fiber.ts:266-275)
+            }
+        });
     }
-
-    void uidUnset() { /* registry bookkeeping in task 9 */ }
 
     // store helpers (abstracted so unload can snapshot)
     private Map<String, Reflect.Impl> storeSnapshot() {
@@ -1760,6 +1766,8 @@ public final class Context {
 ```java
 package dev.dsh.cordis;
 
+import dev.dsh.cordis.util.Disposable;
+
 import java.util.*;
 
 /** Plugin registry installed as ctx.registry (registry.ts:195-337). */
@@ -1818,6 +1826,9 @@ public final class Registry {
 
         Fiber fiber = new Fiber(caller, config, injectMap, runtime);
         runtime.fibers.push(fiber);
+
+        // 级联:父 fiber 卸载时 dispose 本插件 fiber(fiber.ts:265)
+        caller.fiber.effect(() -> (Disposable) () -> fiber.dispose(), "ctx.plugin()");
 
         // publication + dependency resolution (fiber.ts:299-319)
         if (fiber.uid != 0 && caller.fiber.state != FiberState.UNLOADING) {
