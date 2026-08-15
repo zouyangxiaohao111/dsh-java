@@ -1,5 +1,7 @@
 package dev.dsh.cordis;
 
+import dev.dsh.cordis.util.DisposableList;
+
 import java.util.Map;
 
 /** Plugin entrypoint (registry.ts:92-146).
@@ -21,4 +23,18 @@ public interface Plugin<T> {
 
     /** Config validator applied before activation. */
     default ConfigValidator<T> config() { return null; }
+
+    /** Mutable registry record shared by all fibers of one plugin (registry.ts:136-145). */
+    final class Runtime {
+        public final String name;
+        public final Plugin<?> callback;
+        public final DisposableList<Fiber> fibers = new DisposableList<>();
+        public final ConfigValidator<?> config;
+
+        Runtime(String name, Plugin<?> callback, ConfigValidator<?> config) {
+            this.name = name; this.callback = callback; this.config = config;
+        }
+        public String name() { return name; }
+        public ConfigValidator<?> config() { return config; }
+    }
 }
