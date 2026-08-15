@@ -1013,8 +1013,12 @@ class EventsTest {
 
 **文件:**
 - 创建:`src/main/java/dev/dsh/cordis/Service.java`
-- 创建:`src/main/java/dev/dsh/cordis/Logger.java`(facade + LoggerService + Message/Exporter)
+- 创建:`src/main/java/dev/dsh/cordis/Message.java`
+- 创建:`src/main/java/dev/dsh/cordis/Exporter.java`
+- 创建:`src/main/java/dev/dsh/cordis/Logger.java`(facade)
+- 创建:`src/main/java/dev/dsh/cordis/LoggerService.java`
 - 创建:`src/test/java/dev/dsh/cordis/ServiceTest.java`
+> 注意:每个 `public` 顶层类型一个文件(JLS §7.6)。Logger 相关类型拆为 4 个文件:`Message` / `Exporter` / `Logger` / `LoggerService`。
 
 **参考源:** `service.ts:11-115`、`logger.ts:29-270`
 
@@ -1034,7 +1038,7 @@ public abstract class Service {
     protected Service(Context ctx, String name) {
         this.ctx = ctx;
         this.name = name;
-        ctx.provide(name, this, this::check);
+        ctx.provide(name, this, ignored -> check());
     }
 
     /** Availability predicate consulted before dependents may load. */
@@ -1068,21 +1072,30 @@ public abstract class Service {
 ```
 > 移植说明:JS 的 callable service(带 `[invoke]`)Java 化为"Context 上的便利方法"(如 `ctx.logger(name)`);`Service[extend]`/`joinPrototype`/`createCallable` 的代理追踪机制 M1 不移植,logger 名称直接从调用方 fiber 派生(见下)。
 
-`Logger.java`(简化但不失语义:Message/Exporter/format/命名 logger):
+Logger 相关类型拆为 4 个文件(JLS §7.6,每文件一个 `public` 顶层类型),内容如下。
+
+`Message.java`:
 ```java
 package dev.dsh.cordis;
 
-import java.util.*;
-import java.util.concurrent.CompletableFuture;
-
 /** Structured log record (logger.ts:29-39). */
 public record Message(long sn, long ts, String name, String type, int level, Object[] args) {}
+```
+
+`Exporter.java`:
+```java
+package dev.dsh.cordis;
 
 /** Sink receiving structured log messages (logger.ts:41-47). */
 @FunctionalInterface
 public interface Exporter {
     void export(Message message);
 }
+```
+
+`Logger.java`(facade):
+```java
+package dev.dsh.cordis;
 
 /** Named logger facade (logger.ts:74-162). */
 public final class Logger {
@@ -1107,6 +1120,15 @@ public final class Logger {
         service.emit(new Message(0, System.currentTimeMillis(), name, type, level, all), this.level);
     }
 }
+```
+
+`LoggerService.java`:
+```java
+package dev.dsh.cordis;
+
+import dev.dsh.cordis.util.Disposable;
+
+import java.util.*;
 
 /** Built-in logging service (logger.ts:194-270). Java-ization: callable → `get(name)`. */
 public final class LoggerService extends Service {
@@ -1121,11 +1143,12 @@ public final class LoggerService extends Service {
     }
 
     /** Register an exporter disposed with the current fiber (logger.ts:232-237). */
-    public CompletableFuture<Void> exporter(Exporter exporter) {
-        int id = ++sn;
-        this.exporters.put(id, exporter);
-        return ctx.fiber().effect(() -> Disposable.of(() -> this.exporters.remove(id)), "ctx.logger.exporter()")
-                .dispose();
+    public Disposable exporter(Exporter exporter) {
+        return ctx.fiber.effect(() -> {
+            int id = ++sn;
+            this.exporters.put(id, exporter);
+            return Disposable.of(() -> this.exporters.remove(id));
+        }, "ctx.logger.exporter()");
     }
 
     /** Named logger for a subsystem (logger.ts:251-261, invoke body). */
@@ -1135,7 +1158,7 @@ public final class LoggerService extends Service {
 
     /** Logger derived from the calling fiber's name (default `ctx.logger()` behavior). */
     public Logger current() {
-        return get(ctx.fiber().name());
+        return get(ctx.fiber.name());
     }
 
     void emit(Message message, int fallbackLevel) {
@@ -1146,7 +1169,7 @@ public final class LoggerService extends Service {
 }
 ```
 > 移植说明:
-> - `LoggerService.exporter()` 用了 `ctx.fiber().effect(...)` 返回 Disposable,立即 `.dispose()` 是个占位缺陷——真正语义是 exporter 随当前 fiber 存活。修正:返回一个注册了 exporter 且返回反注册 disposer 的 effect 的 Disposable(见任务 10 后回填,计划允许在任务 12 前修正)。
+> - `LoggerService.exporter()` 返回一个注册了 exporter 且随当前 fiber 存活、可反注册的 Disposable:`ctx.fiber.effect(...)` 内注册 + 返回反注册 disposer(修正早期占位版"注册后立即 dispose"的缺陷)。
 > - printf 格式化、ANSI 颜色、WeakRef fiber 元数据 M1 从简:`format` 拼字符串,颜色不做。
 
 **测试:** `ServiceTest.java` 占位(完整语义任务 12):
@@ -1158,11 +1181,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class ServiceTest {
     @Test
-    void placeholderForIntegration() { assertThat(true).isTrue(); }
+    void placeholderForIntegration() {
+        assertThat(true).isTrue();
+    }
 }
 ```
 
-- [ ] **步骤 1:创建 `Service.java` + `Logger.java` + 测试**
+- [ ] **步骤 1:创建 `Service.java` + `Message.java` + `Exporter.java` + `Logger.java` + `LoggerService.java` + 测试**
 - [ ] **步骤 2:提交** `feat: service base and logger`
 
 ---
