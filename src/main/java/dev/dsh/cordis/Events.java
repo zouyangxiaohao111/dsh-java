@@ -47,17 +47,28 @@ public final class Events {
         for (Listener cb : dispatch("emit", thisArg, full)) cb.call(thisArg, args);
     }
 
-    /** Run listeners concurrently and wait for all (events.ts:183-187). */
+    /** Run listeners concurrently and wait for all; aggregate failures (events.ts:183-187). */
     public CompletableFuture<Void> parallel(String name, Object... args) {
         Object[] full = prepend(name, args);
-        List<CompletableFuture<?>> fs = new ArrayList<>();
-        for (Listener cb : dispatch("parallel", null, full)) {
-            Object r;
-            try { r = cb.call(null, args); }
-            catch (Throwable t) { return CompletableFuture.failedFuture(t); }
-            if (r instanceof CompletableFuture<?> cf) fs.add(cf);
+        List<Throwable> errors = new ArrayList<>();
+        List<CompletableFuture<?>> all = new ArrayList<>();
+        for (Listener cb : dispatch("emit", null, full)) {
+            try {
+                Object r = cb.call(null, args);
+                if (r instanceof CompletableFuture<?> cf) {
+                    all.add(cf.handle((v, t) -> {
+                        if (t != null) errors.add(t);
+                        return null;
+                    }));
+                }
+            } catch (Throwable t) {
+                errors.add(t);
+            }
         }
-        return CompletableFuture.allOf(fs.toArray(new CompletableFuture[0]));
+        return CompletableFuture.allOf(all.toArray(new CompletableFuture[0]))
+                .thenRun(() -> {
+                    if (!errors.isEmpty()) throw new AggregateError(errors);
+                });
     }
 
     /** Run listeners in order, awaiting each, until one returns a bail value (events.ts:204-209). */
@@ -113,6 +124,7 @@ public final class Events {
 
     /** Register a listener owned by the current fiber (events.ts:254-302). */
     public Disposable on(String name, Listener listener, EventOptions opts) {
+        if (opts == null) opts = new EventOptions();
         return this.ctx.fiber.effect(() -> {
             List<Hook> list = hooks.computeIfAbsent(name, k -> new ArrayList<>());
             Hook hook = new Hook(this.ctx, listener, opts.prepend, opts.global);
@@ -126,9 +138,20 @@ public final class Events {
 
     /** Register a listener that disposes itself after the first call (events.ts:312-318). */
     public Disposable once(String name, Listener listener, EventOptions opts) {
+        if (opts == null) opts = new EventOptions();
         Disposable[] self = new Disposable[1];
         self[0] = on(name, (ctx, args) -> { self[0].dispose(); return listener.call(ctx, args); }, opts);
         return self[0];
+    }
+
+    /** Aggregates multiple listener failures (mirrors JS AggregateError). */
+    public static final class AggregateError extends RuntimeException {
+        private final List<Throwable> errors;
+        public AggregateError(List<Throwable> errors) {
+            super("parallel dispatch failed with " + errors.size() + " errors");
+            this.errors = List.copyOf(errors);
+        }
+        public List<Throwable> getErrors() { return errors; }
     }
 
     public static boolean isBailed(Object value) {

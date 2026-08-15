@@ -804,7 +804,6 @@ import dev.dsh.cordis.util.Disposable;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 
 /** Event bus with 5 dispatch modes and context filtering (events.ts). */
 public final class Events {
@@ -813,9 +812,6 @@ public final class Events {
     public interface Listener {
         Object call(Context ctx, Object... args);
     }
-
-    /** Convenience: listener ignoring the dispatching context. */
-    static Listener ignoringCtx(Listener l) { return l; }
 
     public record Hook(Context ctx, Listener callback, boolean prepend, boolean global) {}
 
@@ -851,17 +847,28 @@ public final class Events {
         for (Listener cb : dispatch("emit", thisArg, full)) cb.call(thisArg, args);
     }
 
-    /** Run listeners concurrently and wait for all (events.ts:183-187). */
+    /** Run listeners concurrently and wait for all; aggregate failures (events.ts:183-187). */
     public CompletableFuture<Void> parallel(String name, Object... args) {
         Object[] full = prepend(name, args);
-        List<CompletableFuture<?>> fs = new ArrayList<>();
-        for (Listener cb : dispatch("parallel", null, full)) {
-            Object r;
-            try { r = cb.call(null, args); }
-            catch (Throwable t) { return CompletableFuture.failedFuture(t); }
-            if (r instanceof CompletableFuture<?> cf) fs.add(cf);
+        List<Throwable> errors = new ArrayList<>();
+        List<CompletableFuture<?>> all = new ArrayList<>();
+        for (Listener cb : dispatch("emit", null, full)) {
+            try {
+                Object r = cb.call(null, args);
+                if (r instanceof CompletableFuture<?> cf) {
+                    all.add(cf.handle((v, t) -> {
+                        if (t != null) errors.add(t);
+                        return null;
+                    }));
+                }
+            } catch (Throwable t) {
+                errors.add(t);
+            }
         }
-        return CompletableFuture.allOf(fs.toArray(new CompletableFuture[0]));
+        return CompletableFuture.allOf(all.toArray(new CompletableFuture[0]))
+                .thenRun(() -> {
+                    if (!errors.isEmpty()) throw new AggregateError(errors);
+                });
     }
 
     /** Run listeners in order, awaiting each, until one returns a bail value (events.ts:204-209). */
@@ -877,7 +884,9 @@ public final class Events {
         try {
             Object r = cb.call(null, args);
             if (r instanceof CompletableFuture<?> cf) {
-                return cf.thenCompose(v -> isBailed(v) ? CompletableFuture.completedFuture(v) : serialLoop(cbs.subList(1, cbs.size()), args));
+                return cf.thenCompose(v -> isBailed(v)
+                        ? CompletableFuture.completedFuture(v)
+                        : serialLoop(cbs.subList(1, cbs.size()), args));
             }
             return isBailed(r) ? CompletableFuture.completedFuture(r) : serialLoop(cbs.subList(1, cbs.size()), args);
         } catch (Throwable t) {
@@ -895,20 +904,27 @@ public final class Events {
         return null;
     }
 
-    /** Compose listeners around the final `next` callback (events.ts:234-243). */
+    /** Compose listeners around the final `next` callback (events.ts:234-243).
+     *  Listeners receive (args..., next); calling `next` advances to the following
+     *  listener, finally the innermost `inner` continuation. */
     public Object waterfall(String name, Object... args) {
-        List<Listener> cbs = dispatch("waterfall", null, args);
-        Object[] full = new Object[args.length];
-        Object inner = args[args.length - 1];
+        Object[] full = prepend(name, args);
+        List<Listener> cbs = dispatch("waterfall", null, full);
+        Listener inner = (Listener) args[args.length - 1];
+        Object[] callArgs = new Object[args.length];
+        System.arraycopy(args, 0, callArgs, 0, args.length - 1);
         java.util.function.Supplier<Object> next = () -> {
             Listener cb = cbs.isEmpty() ? null : cbs.remove(0);
-            return cb != null ? cb.call(null, args) : inner;
+            Listener target = cb != null ? cb : inner;
+            return target.call(null, callArgs);
         };
+        callArgs[args.length - 1] = next;
         return next.get();
     }
 
     /** Register a listener owned by the current fiber (events.ts:254-302). */
     public Disposable on(String name, Listener listener, EventOptions opts) {
+        if (opts == null) opts = new EventOptions();
         return this.ctx.fiber.effect(() -> {
             List<Hook> list = hooks.computeIfAbsent(name, k -> new ArrayList<>());
             Hook hook = new Hook(this.ctx, listener, opts.prepend, opts.global);
@@ -922,9 +938,20 @@ public final class Events {
 
     /** Register a listener that disposes itself after the first call (events.ts:312-318). */
     public Disposable once(String name, Listener listener, EventOptions opts) {
+        if (opts == null) opts = new EventOptions();
         Disposable[] self = new Disposable[1];
         self[0] = on(name, (ctx, args) -> { self[0].dispose(); return listener.call(ctx, args); }, opts);
         return self[0];
+    }
+
+    /** Aggregates multiple listener failures (mirrors JS AggregateError). */
+    public static final class AggregateError extends RuntimeException {
+        private final List<Throwable> errors;
+        public AggregateError(List<Throwable> errors) {
+            super("parallel dispatch failed with " + errors.size() + " errors");
+            this.errors = List.copyOf(errors);
+        }
+        public List<Throwable> getErrors() { return errors; }
     }
 
     public static boolean isBailed(Object value) {
