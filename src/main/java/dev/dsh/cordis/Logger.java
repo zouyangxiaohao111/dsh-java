@@ -5,10 +5,10 @@ public final class Logger {
     public final String name;
     public final int level;
     private final LoggerService service;
-    private final Message meta;
 
-    Logger(String name, int level, LoggerService service, Message meta) {
-        this.name = name; this.level = level; this.service = service; this.meta = meta;
+    // WeakRef fiber 元数据 M1 从简,故无 meta 字段(对应 logger.ts 构造中的 meta: { fiber })
+    Logger(String name, int level, LoggerService service) {
+        this.name = name; this.level = level; this.service = service;
     }
 
     public void error(Object format, Object... args) { emit("error", 0, format, args); }
@@ -20,6 +20,6 @@ public final class Logger {
         Object[] all = new Object[args.length + 1];
         all[0] = format;
         System.arraycopy(args, 0, all, 1, args.length);
-        service.emit(new Message(0, System.currentTimeMillis(), name, type, level, all), this.level);
+        service.emit(new Message(service.nextMessageSn(), System.currentTimeMillis(), name, type, level, all), this.level);
     }
 }
