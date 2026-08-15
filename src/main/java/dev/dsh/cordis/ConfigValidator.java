@@ -7,8 +7,4 @@ import com.fasterxml.jackson.databind.JsonNode;
 @FunctionalInterface
 public interface ConfigValidator<T> {
     T validate(JsonNode node);
-
-    default ConfigValidator<T> andThen(ConfigValidator<T> other) {
-        return node -> other.validate((JsonNode) this.validate(node));
-    }
 }

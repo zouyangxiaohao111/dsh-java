@@ -393,10 +393,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 @FunctionalInterface
 public interface ConfigValidator<T> {
     T validate(JsonNode node);
-
-    default ConfigValidator<T> andThen(ConfigValidator<T> other) {
-        return node -> other.validate(this.validate(node));
-    }
 }
 ```
 > 移植说明:async validation(TS 中 throw "not supported")在 Java 中不适用,`validate` 为同步函数,抛出 `ValidationError` 表示失败。默认(插件无 Config)直接透传 JsonNode,见任务 7 `resolveConfig`。
