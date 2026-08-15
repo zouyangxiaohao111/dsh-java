@@ -1240,6 +1240,7 @@ public final class Fiber {
         this.runtime = runtime;
         this.uid = runtime == null ? 0 : parent.registry.counter();
         this.ctx = runtime == null ? parent : parent.extend();
+        this.ctx.fiber = this;   // rebind: plugin context's fiber is this fiber (fiber.ts:236)
 
         // constructor body follows fiber.ts:229-333
         if (runtime != null) {
@@ -1330,7 +1331,7 @@ public final class Fiber {
     // ---- dependency / epoch machinery (fiber.ts:597-696) ----
 
     void checkImpl(String name) {
-        Reflect.Impl impl = this.ctx.reflect.getImpl(name, true);
+        Reflect.Impl impl = this.ctx.reflect.getImpl(this.ctx, name, true);
         if (impl == null) { storeRemove(name); return; }
         try {
             if (impl.check != null && !impl.check.test(ctx)) { storeRemove(name); return; }
