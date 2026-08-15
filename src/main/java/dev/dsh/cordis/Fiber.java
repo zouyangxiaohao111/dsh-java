@@ -85,6 +85,9 @@ public final class Fiber {
      *  now; collected disposers run in reverse order on teardown and are awaited. */
     public Disposable effect(EffectBody body, String label) {
         assertActive();
+        if (this.state == FiberState.UNLOADING) {
+            throw new CordisError(CordisError.Code.INACTIVE_EFFECT);
+        }
         List<Disposable> disposables = new ArrayList<>();
         Disposable dispose = () -> {
             CompletableFuture<Void> task = CompletableFuture.completedFuture(null);
@@ -157,10 +160,10 @@ public final class Fiber {
         if (this.inertia != null) return;
         if (!Objects.equals(newEpoch, INACTIVE) && Objects.equals(oldEpoch, INACTIVE)) {
             this.state = FiberState.LOADING;
-            this.inertia = this.reload();
+            this.reload();   // reload() 自己管理 this.inertia
         } else {
             this.state = FiberState.UNLOADING;
-            this.inertia = this.unload();
+            this.unload();   // unload() 自己管理 this.inertia
         }
     }
 
@@ -185,7 +188,7 @@ public final class Fiber {
             this.state = FiberState.UNLOADING;
             this.inertia = this.unload();
         }
-        return this.inertia == null ? CompletableFuture.completedFuture(null) : this.inertia;
+        return this.inertia;
     }
 
     /** Unload: run disposers in reverse order (fiber.ts:675-696). */
@@ -203,8 +206,8 @@ public final class Fiber {
                 this.state = this._error != null ? FiberState.FAILED : FiberState.PENDING;
             } else {
                 this.state = FiberState.LOADING;
-                this.inertia = this.reload();
-                return this.inertia;
+                this.reload();   // reload() 自己管理 this.inertia
+                return this.inertia != null ? this.inertia : CompletableFuture.completedFuture(null);
             }
             return CompletableFuture.completedFuture(null);
         });
@@ -246,8 +249,8 @@ public final class Fiber {
     /** Dispose and immediately reload with current config (fiber.ts:718-723). */
     public CompletableFuture<Void> restart() {
         assertActive();
-        this.epoch = INACTIVE;
-        this.refresh();
+        setEpoch(INACTIVE);  // 若 ACTIVE,先卸载旧 effects
+        refresh();           // 重算依赖,可触发 reload
         return awaitInternal().thenApply(v -> null);
     }
 
@@ -270,6 +273,7 @@ public final class Fiber {
     /** Dispose this fiber: unload, then settle once cleanup finished. */
     public CompletableFuture<Void> dispose() {
         if (this.state == FiberState.DISPOSED) return CompletableFuture.completedFuture(null);
+        this.epoch = INACTIVE;   // unload 不得重载 ACTIVE fiber
         CompletableFuture<Void> done = unload();
         return done.thenAccept(v -> {
             this.state = FiberState.DISPOSED;
