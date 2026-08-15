@@ -1752,8 +1752,6 @@ public final class Context {
 ```java
 package dev.dsh.cordis;
 
-import dev.dsh.cordis.util.DisposableList;
-
 import java.util.*;
 
 /** Plugin registry installed as ctx.registry (registry.ts:195-337). */
@@ -1787,18 +1785,18 @@ public final class Registry {
     public Collection<Plugin.Runtime> values() { return _internal.values(); }
 
     /** Start a callback once requested dependencies are available (registry.ts:300-302). */
-    public Fiber inject(Inject deps, PluginSpec.PluginApply<Void> callback) {
+    public Fiber inject(Context caller, Inject deps, PluginSpec.PluginApply<Void> callback) {
         PluginSpec<Void> spec = PluginSpec.of(callback);
         spec.inject(deps.entries.keySet().toArray(String[]::new));
         for (var e : deps.entries.entrySet()) {
             if (e.getValue() != null) spec.injectConfig(e.getKey(), e.getValue());
         }
-        return plugin(spec, null);
+        return plugin(caller, spec, null);
     }
 
     /** Start a plugin in the current context and return its fiber (registry.ts:316-336). */
-    public Fiber plugin(Plugin<?> plugin, Object config) {
-        this.ctx.fiber.assertActive();
+    public Fiber plugin(Context caller, Plugin<?> plugin, Object config) {
+        caller.fiber.assertActive();
 
         Plugin.Runtime runtime = _internal.get(plugin);
         if (runtime == null) {
@@ -1810,11 +1808,11 @@ public final class Registry {
         for (String name : plugin.inject()) injectMap.put(name, null);
         injectMap.putAll(plugin.injectConfig());
 
-        Fiber fiber = new Fiber(this.ctx, config, injectMap, runtime);
+        Fiber fiber = new Fiber(caller, config, injectMap, runtime);
         runtime.fibers.push(fiber);
 
         // publication + dependency resolution (fiber.ts:299-319)
-        if (fiber.uid != 0 && this.ctx.fiber.state != FiberState.UNLOADING) {
+        if (fiber.uid != 0 && caller.fiber.state != FiberState.UNLOADING) {
             for (String name : injectMap.keySet()) {
                 fiber.checkImpl(name);
             }
@@ -1831,7 +1829,7 @@ public final class Registry {
 > - `registry.inject(deps, callback)` 的 fluent 形态用 `PluginSpec` 组装。
 
 - [ ] **步骤 1:创建 `Registry.java`(以上代码)**
-- [ ] **步骤 2:提交** `feat: plugin registry with runtime table`
+- [ ] **步骤 2:提交** `feat: plugin registry with caller-aware plugin entry`
 
 ---
 
