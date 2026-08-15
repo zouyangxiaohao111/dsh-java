@@ -1400,7 +1400,7 @@ public final class Fiber {
             this.inertia = null;
         } else {
             this.state = FiberState.UNLOADING;
-            this.inertia = this.unload();
+            this.unload();   // unload() 自己管理 this.inertia
         }
         return this.inertia;
     }
@@ -1412,18 +1412,19 @@ public final class Fiber {
         for (Disposable d : toRun) {
             chain = chain.thenCompose(v -> safeDispose(d));
         }
+        this.inertia = chain;   // 同步标记在飞(基链),覆盖异步窗口;终态 continuation 再置 null 或调 reload
         return chain.thenCompose(v -> {
             this.store = null;
             if (Objects.equals(this.epoch, INACTIVE)) {
                 this.inertia = null;
                 // fiber.ts:_getState — no pending reload: FAILED if errored, else PENDING
                 this.state = this._error != null ? FiberState.FAILED : FiberState.PENDING;
+                return CompletableFuture.completedFuture(null);
             } else {
                 this.state = FiberState.LOADING;
                 this.reload();   // reload() 自己管理 this.inertia
                 return this.inertia != null ? this.inertia : CompletableFuture.completedFuture(null);
             }
-            return CompletableFuture.completedFuture(null);
         });
     }
 
