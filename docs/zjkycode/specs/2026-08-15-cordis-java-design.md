@@ -29,6 +29,7 @@
 | 构建工具 | Gradle(Kotlin DSL),wrapper 引导 | 多模块友好,JDK 25 支持好 |
 | 代理 | `127.0.0.1:7897`(env + gradle.properties 双保险) | 用户网络环境 |
 | 里程碑范围 | 核心 + Java 插件(方案 A 忠实移植) | 先验证地基语义 |
+| 实现方式 | **忠实逐个文件复刻** `vendor/cordis/src/*.ts` → Java | 核心仅 ~2100 行 TS,全量移植成本低,换取完整语义(waterfall 钩子、`@Inject` 类式、logger 全部入列),避免"先砍后补"返工 |
 | 实现方向 | **忠实移植 cordis 动态模型** | 统一契约要求两边身份对称(都按名字依赖/提供);Java 类型安全用泛型 + accessor 接口层补充,不牺牲动态性 |
 | 异步模型 | `CompletableFuture` | 镜像 JS Promise 语义;GraalJS 桥原生支持 Promise↔CompletableFuture 互转,为里程碑 2 铺路 |
 
@@ -53,7 +54,23 @@ dev.dsh.cordis
 
 包名 `dev.dsh.cordis` 为提案,可在实施中调整。
 
-### 3.2 契约层(对照 JS)
+### 3.2 文件级映射(实施骨架,逐个对照 `vendor/cordis/src`)
+
+| TS 源文件 | Java 类 | 移植要点 |
+|---|---|---|
+| `context.ts` | `Context` | 去掉 JS Proxy,服务解析收敛为 `get(name)` + 显式方法;`extend/isolate/intercept` 语义保留 |
+| `registry.ts` | `Registry` + `Plugin` + `Inject` | 函数/类/对象插件三形态归一为 `Plugin<T>` 接口 + `Plugin.of` fluent;`Plugin.Runtime` 注册表保留 |
+| `fiber.ts` | `Fiber` + `FiberState` + `ValidationError` | 状态机 + epoch 重载全量移植;`internal/config`/`internal/update` waterfall 钩子保留(不是扩展点,是规格的一部分) |
+| `events.ts` | `Events` | 5 种 dispatch + `internal/*` 事件 + 上下文过滤 |
+| `reflect.ts` | `Reflect` | `store: Map<label, Impl>`;provide/get/set/accessor/mixin;`notify()` 唤醒依赖方 |
+| `service.ts` | `Service` | 构造时 `ctx.provide`;callable 服务用 `@FunctionalInterface` 形态 |
+| `logger.ts` | `Logger` | 命名 logger,随 fiber 隔离 |
+| `utils.ts` | `util`(`DisposableList`/`Symbols`/错误组合) | symbols → 命名键;composeError → 包装异常;`isConstructor` → 反射判断 |
+| `index.ts` | 包导出 | 公共 API 面 |
+
+> 移植原则:**语义逐态忠实**(状态机、epoch、disposer 反序、事件模式、隔离过滤);语法必然 Java 化(Proxy→显式方法、symbols→命名键、鸭子类型→接口),两者不冲突——"忠实"指的是行为契约,不是 TS 语法。
+
+### 3.3 契约层(对照 JS)
 
 ```java
 // JS: Object.assign((ctx, config) => {...}, { inject: ['counter'] })
@@ -69,7 +86,7 @@ public class Greeter implements Plugin<Void> { ... }
 - `Service` 基类构造函数调 `ctx.provide(name, this)`,随 fiber 卸载自动移除(对应 `service.ts:42`)。
 - `Plugin<T>` 支持函数式 `Plugin.of(...)`(fluent builder 携带 inject/provide/Config/name)与类式实现两种形态。
 
-### 3.3 Fiber 生命周期 + inject 驱动重载(灵魂,忠实移植)
+### 3.4 Fiber 生命周期 + inject 驱动重载(灵魂,忠实移植)
 
 状态机逐态对照 `fiber.ts:184-753`:
 
@@ -91,7 +108,7 @@ dispose():
 
 异步:插件 `apply` 可返回 `void` 或 `CompletableFuture<?>`;disposer 可返回 `void` 或 `CompletableFuture<Void>`;`fiber.await()/dispose()/update()` 均返回 `CompletableFuture`。
 
-### 3.4 事件系统
+### 3.5 事件系统
 
 5 种 dispatch 逐一对应 `events.ts:183-243`:
 
@@ -128,8 +145,9 @@ JUnit 5 + AssertJ 测试覆盖("忠实"的验收标准):
 1. **inject 延迟启动** — 先注册 greeter 再注册 counter,counter 出现前 greeter 保持 PENDING,出现后自动激活;
 2. **依赖变更自动重载** — dispose 掉 counter 提供者,greeter 自动 unload;换实现重新 provide,greeter 用新实现重载;
 3. **fiber 反序清理** — 效果注册顺序与清理顺序相反;
-4. **事件 5 种模式** — 各 dispatch 语义断言;
-5. **isolate 隔离** — 子作用域服务互不污染。
+4. **事件 5 种模式** — 各 dispatch 语义断言(含 `waterfall` 中间件链与 `internal/config`/`internal/update` 钩子);
+5. **isolate 隔离** — 子作用域服务互不污染;
+6. **状态机全转换** — `PENDING→LOADING→ACTIVE`,失败路径 `LOADING→FAILED`(apply 抛异常),`dispose→DISPOSED`;`await()` 重抛启动错误。
 
 ## 5. 后续里程碑(不在本次范围)
 
