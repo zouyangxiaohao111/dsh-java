@@ -6,7 +6,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PluginTest {
     @Test
     void specCarriesMetadata() {
-        PluginSpec<Void> p = PluginSpec.of((ctx, cfg) -> {})
+        PluginSpec<Void> p = PluginSpec.<Void>of((ctx, cfg) -> {})
                 .name("greeter").inject("counter").provide("out");
         assertThat(p.name()).isEqualTo("greeter");
         assertThat(p.inject()).containsExactly("counter");
@@ -32,7 +32,7 @@ class PluginTest {
 
     @Test
     void specAccumulatesInjectConfig() {
-        PluginSpec<Void> p = PluginSpec.of((ctx, cfg) -> {}).injectConfig("a", 1).injectConfig("b", 2);
+        PluginSpec<Void> p = PluginSpec.<Void>of((ctx, cfg) -> {}).injectConfig("a", 1).injectConfig("b", 2);
         assertThat(p.injectConfig()).containsEntry("a", 1).containsEntry("b", 2);
     }
 }

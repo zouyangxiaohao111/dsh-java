@@ -43,7 +43,7 @@ public final class LoggerService extends Service {
 
     void emit(Message message, int fallbackLevel) {
         for (Exporter exporter : exporters.values()) {
-            if (fallbackLevel < message.level) continue;
+            if (fallbackLevel < message.level()) continue;
             exporter.export(message);
         }
     }

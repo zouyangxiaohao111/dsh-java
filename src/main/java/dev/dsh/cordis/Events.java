@@ -125,10 +125,11 @@ public final class Events {
     /** Register a listener owned by the current fiber (events.ts:254-302). */
     public Disposable on(String name, Listener listener, EventOptions opts) {
         if (opts == null) opts = new EventOptions();
+        final EventOptions options = opts;
         return this.ctx.fiber.effect(() -> {
             List<Hook> list = hooks.computeIfAbsent(name, k -> new ArrayList<>());
-            Hook hook = new Hook(this.ctx, listener, opts.prepend, opts.global);
-            if (opts.prepend) list.add(0, hook); else list.add(hook);
+            Hook hook = new Hook(this.ctx, listener, options.prepend, options.global);
+            if (options.prepend) list.add(0, hook); else list.add(hook);
             return Disposable.of(() -> {
                 list.remove(hook);
                 if (list.isEmpty()) hooks.remove(name);
