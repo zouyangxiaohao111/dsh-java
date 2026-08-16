@@ -14,14 +14,13 @@ class ServiceRpcTest {
     @Test
     void jsCallsJavaServiceViaProxy() throws Exception {
         Context root = new Context();
-        try (JsHost host = new GraalJsHost()) {
+        try (GraalJsHost host = new GraalJsHost()) {
             root.provide("greeter", new Greeter());
             AtomicInteger got = new AtomicInteger();
             root.on("result", (c, args) -> { got.set(Integer.parseInt(String.valueOf(args[0]))); return null; });
 
-            org.graalvm.polyglot.Value fn = host.eval(
-                "(ctx) => { ctx.on('go', () => { const g = ctx.get('greeter'); ctx.emit('result', g.add(2, 3)); }); }");
-            root.plugin(new JsPluginAdapter(host, fn), null);
+            root.plugin(new JsPluginAdapter(host, host.eval(
+                "(ctx) => { ctx.on('go', () => { const g = ctx.get('greeter'); ctx.emit('result', g.add(2, 3)); }); }")), null);
             root.emit("go");
             assertThat(got.get()).isEqualTo(5);
         }

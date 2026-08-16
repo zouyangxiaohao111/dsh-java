@@ -31,22 +31,35 @@ public final class GraalJsHost implements JsHost {
                 .build();
     }
 
-    /** Evaluate a JS expression and return the resulting value. */
-    @Override public Value eval(String script) {
-        return context.eval("js", script);
+    /** Evaluate a JS expression and return the resulting plugin-module handle. */
+    @Override public PluginModule eval(String script) {
+        return new GraalPluginModule(this, context.eval("js", script));
     }
 
     /** Load a CommonJS module by specifier relative to the require cwd. */
-    @Override public Value require(String specifier) {
-        return context.eval("js", "require(" + quoted(specifier) + ")");
+    @Override public PluginModule require(String specifier) {
+        return new GraalPluginModule(this, context.eval("js", "require(" + quoted(specifier) + ")"));
     }
 
     /** Load a CommonJS module file by absolute path. */
-    @Override public Value loadModule(Path file) {
-        return context.eval("js", "require(" + quoted(file.toAbsolutePath().toString()) + ")");
+    @Override public PluginModule loadModule(Path file) {
+        return new GraalPluginModule(this, context.eval("js", "require(" + quoted(file.toAbsolutePath().toString()) + ")"));
     }
 
-    @Override public Context graalContext() { return context; }
+    /** The underlying GraalJS context (bridge interop entry; was {@code graalContext()}). */
+    public Context context() { return context; }
+
+    /** GraalJS 专属:直接取 polyglot Value(桥/测试直接互操作用)。 */
+    public Value evalValue(String script) { return context.eval("js", script); }
+
+    /** GraalJS 专属:直接取 polyglot Value。 */
+    public Value requireValue(String specifier) { return context.eval("js", "require(" + quoted(specifier) + ")"); }
+
+    /** GraalJS 专属:直接取 polyglot Value。 */
+    public Value loadModuleValue(Path file) { return context.eval("js", "require(" + quoted(file.toAbsolutePath().toString()) + ")"); }
+
+    /** Wrap a polyglot Value as a plugin module. */
+    public GraalPluginModule module(Value v) { return new GraalPluginModule(this, v); }
 
     @Override
     public void close() { context.close(); }

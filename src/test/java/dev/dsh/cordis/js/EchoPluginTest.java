@@ -22,9 +22,9 @@ class EchoPluginTest {
     @Test
     void loadRealKoishiPluginAndTrigger() throws Exception {
         Context root = new Context();
-        try (JsHost host = new GraalJsHost(echoNodeModules())) {
+        try (GraalJsHost host = new GraalJsHost(echoNodeModules())) {
             // 加载 echo(对象-with-apply,经 require 解析到真实 lib/index.js)
-            Value echo = host.loadModule(echoLib());
+            PluginModule echo = host.loadModule(echoLib());
             root.plugin(new JsPluginAdapter(host, echo), null);
 
             // Java 模拟 session 消息触发命令;echo action 为 async,返回 Promise,需 await
@@ -41,7 +41,7 @@ class EchoPluginTest {
      * 挂 {@code then}(经 ProxyExecutable 可靠转成 JS 回调),等 settle 后提取文本。
      * 若 raw 不是 Promise(已是最终值),直接转换。
      */
-    private String awaitJs(Object raw, JsHost host) throws Exception {
+    private String awaitJs(Object raw, GraalJsHost host) throws Exception {
         if (!(raw instanceof Value v)) return String.valueOf(raw);
         if (!v.hasMember("then")) return valueText(v);   // 非 Promise:直接取最终值
 
@@ -52,7 +52,7 @@ class EchoPluginTest {
         };
         v.invokeMember("then", onResolve);
         // 实验确认:GraalJS 在 invokeMember 返回宿主时已冲刷 microtask,此 eval 仅作防御。
-        host.eval("0");
+        host.evalValue("0");
         Value result = settled.get(5, TimeUnit.SECONDS);
         return valueText(result);
     }

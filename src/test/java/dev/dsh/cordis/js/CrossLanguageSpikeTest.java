@@ -15,17 +15,16 @@ class CrossLanguageSpikeTest {
     @Test
     void javaProvidesJsCallsAndEmitsBack() throws Exception {
         Context root = new Context();
-        try (JsHost host = new GraalJsHost()) {
+        try (GraalJsHost host = new GraalJsHost()) {
             root.provide("counter", new Counter());
 
             AtomicReference<String> done = new AtomicReference<>();
             root.on("done", (c, args) -> { done.set(args[0] + "#" + args[1]); return null; });
 
-            org.graalvm.polyglot.Value fn = host.eval(
+            root.plugin(new JsPluginAdapter(host, host.eval(
                 "(ctx) => { ctx.on('app/ready', () => { " +
                 "  const c = ctx.get('counter'); ctx.emit('done', 'n', c.next()); " +
-                "}); }");
-            root.plugin(new JsPluginAdapter(host, fn), null);
+                "}); }")), null);
 
             root.emit("app/ready", "started");
             assertThat(done.get()).isEqualTo("n#1");

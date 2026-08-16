@@ -52,10 +52,10 @@ class DshPluginSpikeTest {
         SessionProjectionsStub projections = new SessionProjectionsStub();
         root.provide("sessionProjections", projections);
 
-        try (JsHost host = new GraalJsHost(resource("node_modules"))) {
+        try (GraalJsHost host = new GraalJsHost(resource("node_modules"))) {
             // 加载 strip+转 CJS 后的真实插件源码(相对 node_modules 目录下的本地模块与依赖)
-            Value plugin = host.loadModule(resource("session-stats/index.js"));
-            root.plugin(new JsPluginAdapter(host, plugin), null);
+            Value plugin = host.loadModuleValue(resource("session-stats/index.js"));
+            root.plugin(new JsPluginAdapter(host, host.module(plugin)), null);
 
             // apply 已跑:插件把 sessionStats 投影单元注册进 sessionProjections
             assertThat(projections.definitions).hasSize(1);
@@ -89,9 +89,9 @@ class DshPluginSpikeTest {
         SessionProjectionsStub projections = new SessionProjectionsStub();
         root.provide("sessionProjections", projections);
 
-        try (JsHost host = new GraalJsHost(resource("node_modules"))) {
-            Value plugin = host.loadModule(resource("session-stats/index.js"));
-            root.plugin(new JsPluginAdapter(host, plugin), null);
+        try (GraalJsHost host = new GraalJsHost(resource("node_modules"))) {
+            Value plugin = host.loadModuleValue(resource("session-stats/index.js"));
+            root.plugin(new JsPluginAdapter(host, host.module(plugin)), null);
             Value def = projections.definitions.get(0);
 
             // 空 delta 心跳(heartbeat)不算首 token:isTokenDelta 返回 false
@@ -113,8 +113,8 @@ class DshPluginSpikeTest {
     }
 
     /** 在 GraalJS 里构造一个 dsh 会话事件: { type, data, time }。 */
-    private static Value event(JsHost host, String type, String dataObjLiteral, long time) {
-        return host.eval("({ type: '" + type + "', data: " + dataObjLiteral + ", time: " + time + " })");
+    private static Value event(GraalJsHost host, String type, String dataObjLiteral, long time) {
+        return host.evalValue("({ type: '" + type + "', data: " + dataObjLiteral + ", time: " + time + " })");
     }
 
     // ---- 候选 2:@deepseek-ai/dsh-repeat-tool-reminder ----
@@ -128,26 +128,26 @@ class DshPluginSpikeTest {
     @Test
     void repeatToolReminderPluginInjectsRemindersThroughBridge() throws Exception {
         Context root = new Context();
-        try (JsHost host = new GraalJsHost(resource("node_modules"))) {
-            host.eval("globalThis.__dshCreatedUserMessages = []");
+        try (GraalJsHost host = new GraalJsHost(resource("node_modules"))) {
+            host.evalValue("globalThis.__dshCreatedUserMessages = []");
 
-            Value plugin = host.loadModule(resource("repeat-tool-reminder/index.js"));
+            Value plugin = host.loadModuleValue(resource("repeat-tool-reminder/index.js"));
             // schemastery 校验被桥跳过(不填默认),config 需显式给全
-            Value config = host.eval("({ thresholds: [3, 5, 8], include: [], exclude: [], argumentsPreviewChars: 500 })");
-            root.plugin(new JsPluginAdapter(host, plugin), config);
+            Value config = host.evalValue("({ thresholds: [3, 5, 8], include: [], exclude: [], argumentsPreviewChars: 500 })");
+            root.plugin(new JsPluginAdapter(host, host.module(plugin)), config);
 
             // 插件监听器之后注册的 Java "最终决策" 落点:next() 委派到它
             root.on("tools/post-execute", (c, args) -> java.util.Map.of("kind", "pass"));
             root.on("agent/pre-step", (c, args) -> null);
 
             // 同一个 exec(同一 agent 对象引用)连发 → WeakMap 链累积
-            Value exec = host.eval("({ agent: { id: 'a1' }, name: 'write_file', arguments: { path: '/tmp/a', content: 'x' } })");
+            Value exec = host.evalValue("({ agent: { id: 'a1' }, name: 'write_file', arguments: { path: '/tmp/a', content: 'x' } })");
             root.emit("tools/post-execute", exec, null);
             root.emit("tools/post-execute", exec, null);
             root.emit("tools/post-execute", exec, null);   // 第 3 次 → gentle 提醒
 
-            assertThat(host.eval("globalThis.__dshCreatedUserMessages.length").asLong()).isEqualTo(1);
-            Value msg = host.eval("globalThis.__dshCreatedUserMessages[0]");
+            assertThat(host.evalValue("globalThis.__dshCreatedUserMessages.length").asLong()).isEqualTo(1);
+            Value msg = host.evalValue("globalThis.__dshCreatedUserMessages[0]");
             assertThat(msg.getMember("role").asString()).isEqualTo("user");
             Value source = msg.getMember("source");
             assertThat(source.getMember("kind").asString()).isEqualTo("plugin");
@@ -159,21 +159,21 @@ class DshPluginSpikeTest {
 
             // 第 4 次不在阈值 → 不新增;第 5 次命中 → detailed 提醒(点名 tool/count/参数)
             root.emit("tools/post-execute", exec, null);
-            assertThat(host.eval("globalThis.__dshCreatedUserMessages.length").asLong()).isEqualTo(1);
+            assertThat(host.evalValue("globalThis.__dshCreatedUserMessages.length").asLong()).isEqualTo(1);
             root.emit("tools/post-execute", exec, null);
-            assertThat(host.eval("globalThis.__dshCreatedUserMessages.length").asLong()).isEqualTo(2);
-            String text2 = host.eval("globalThis.__dshCreatedUserMessages[1].content[0].text").asString();
+            assertThat(host.evalValue("globalThis.__dshCreatedUserMessages.length").asLong()).isEqualTo(2);
+            String text2 = host.evalValue("globalThis.__dshCreatedUserMessages[1].content[0].text").asString();
             assertThat(text2).contains("Repeated tool call detected");
             assertThat(text2).contains("tool: write_file");
             assertThat(text2).contains("consecutive_calls: 5");
 
             // 用户插话(agent/pre-step 带 user 消息)→ 链重置;再 3 次才提醒
-            Value pre = host.eval("({ agent: { id: 'a1' }, messages: [{ source: { kind: 'user' } }] })");
+            Value pre = host.evalValue("({ agent: { id: 'a1' }, messages: [{ source: { kind: 'user' } }] })");
             root.emit("agent/pre-step", pre);
             root.emit("tools/post-execute", exec, null);
             root.emit("tools/post-execute", exec, null);
             root.emit("tools/post-execute", exec, null);
-            assertThat(host.eval("globalThis.__dshCreatedUserMessages.length").asLong()).isEqualTo(3);
+            assertThat(host.evalValue("globalThis.__dshCreatedUserMessages.length").asLong()).isEqualTo(3);
         }
         root.fiber.dispose().join();
     }

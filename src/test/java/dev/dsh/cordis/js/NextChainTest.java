@@ -17,12 +17,12 @@ class NextChainTest {
     @Test
     void listenerNextDelegatesToFollowing() throws Exception {
         Context root = new Context();
-        try (JsHost host = new GraalJsHost()) {
+        try (GraalJsHost host = new GraalJsHost()) {
             AtomicReference<String> javaGot = new AtomicReference<>();
             // Java 监听器最先注册:主 dispatch 最先收到原始参数
             root.on("chain", (c, args) -> { javaGot.set("java-first:" + args[0]); return null; });
 
-            org.graalvm.polyglot.Value fn = host.eval(
+            org.graalvm.polyglot.Value fn = host.evalValue(
                     "(ctx) => { globalThis.trace = []; " +
                     "ctx.on('chain', (msg, next) => { trace.push('js1:' + msg); next('from-next'); }); " +
                     "ctx.on('chain', (msg) => { trace.push('js2:' + msg); }); }");
@@ -30,7 +30,7 @@ class NextChainTest {
             fn.execute(bridge.ctxShim());
 
             root.emit("chain", "x");
-            String trace = host.eval("globalThis.trace.join(',')").asString();
+            String trace = host.evalValue("globalThis.trace.join(',')").asString();
 
             // 主 dispatch 顺序:java-first, js1, js2;js1 的 next 使 js2 额外收到 'from-next'
             assertThat(javaGot.get()).isEqualTo("java-first:x");
@@ -43,10 +43,10 @@ class NextChainTest {
     @Test
     void nextDelegatesToJavaListenerRegisteredAfter() throws Exception {
         Context root = new Context();
-        try (JsHost host = new GraalJsHost()) {
+        try (GraalJsHost host = new GraalJsHost()) {
             AtomicReference<String> javaGot = new AtomicReference<>();
 
-            org.graalvm.polyglot.Value fn = host.eval(
+            org.graalvm.polyglot.Value fn = host.evalValue(
                     "(ctx) => { globalThis.trace = []; " +
                     "ctx.on('chain', (msg, next) => { trace.push('js1:' + msg); next('from-next'); }); }");
             JsCtxBridge bridge = new JsCtxBridge(host, root);
@@ -69,10 +69,10 @@ class NextChainTest {
     @Test
     void listenerWithoutNextReceivesPlainArgs() throws Exception {
         Context root = new Context();
-        try (JsHost host = new GraalJsHost()) {
+        try (GraalJsHost host = new GraalJsHost()) {
             AtomicReference<String> got = new AtomicReference<>();
 
-            org.graalvm.polyglot.Value fn = host.eval(
+            org.graalvm.polyglot.Value fn = host.evalValue(
                     "(ctx) => { ctx.on('plain', (msg) => { ctx.emit('plain2', msg); }); }");
             JsCtxBridge bridge = new JsCtxBridge(host, root);
             fn.execute(bridge.ctxShim());
@@ -88,12 +88,12 @@ class NextChainTest {
     @Test
     void prependOptionPutsJsListenerFirst() throws Exception {
         Context root = new Context();
-        try (JsHost host = new GraalJsHost()) {
+        try (GraalJsHost host = new GraalJsHost()) {
             Recorder rec = new Recorder();
             root.provide("rec", rec);
             root.on("p", (c, args) -> { rec.add("java"); return null; });
 
-            org.graalvm.polyglot.Value fn = host.eval(
+            org.graalvm.polyglot.Value fn = host.evalValue(
                     "(ctx) => { ctx.on('p', () => { ctx.get('rec').add('js'); }, { prepend: true }); }");
             JsCtxBridge bridge = new JsCtxBridge(host, root);
             fn.execute(bridge.ctxShim());

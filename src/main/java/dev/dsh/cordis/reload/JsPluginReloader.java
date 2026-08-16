@@ -4,7 +4,7 @@ import dev.dsh.cordis.Context;
 import dev.dsh.cordis.js.JsHost;
 import dev.dsh.cordis.js.GraalJsHost;
 import dev.dsh.cordis.js.JsPluginAdapter;
-import org.graalvm.polyglot.Value;
+import dev.dsh.cordis.js.PluginModule;
 
 import java.nio.file.Path;
 
@@ -18,7 +18,7 @@ public final class JsPluginReloader {
         JsHost oldHost = oldAdapter.host();
         if (oldHost != null) oldHost.close();
         JsHost newHost = new GraalJsHost(jsFile.getParent());
-        Value exports = newHost.loadModule(jsFile.toAbsolutePath());
+        PluginModule exports = newHost.loadModule(jsFile.toAbsolutePath());
         JsPluginAdapter newAdapter = new JsPluginAdapter(newHost, exports);
         ctx.registry.delete(oldAdapter);
         ctx.registry.plugin(ctx, newAdapter, config);

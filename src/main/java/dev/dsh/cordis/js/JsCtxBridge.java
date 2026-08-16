@@ -21,13 +21,13 @@ public final class JsCtxBridge {
      *  WeakHashMap:root Context 无引用后条目可回收。访问统一加锁(WeakHashMap 非线程安全)。 */
     private static final Map<Context, Map<String, CommandEntry>> SHARED_COMMANDS = new java.util.WeakHashMap<>();
 
-    private final JsHost host;
+    private final GraalJsHost host;
     private final Context ctx;
     private Value shim;
     /** 命令注册表:命令名 → 入口(design §4.2)。ctx 为 null 时(纯 DSL 测试)退化为实例私有。 */
     private final Map<String, CommandEntry> commands;
 
-    public JsCtxBridge(JsHost host, Context ctx) {
+    public JsCtxBridge(GraalJsHost host, Context ctx) {
         this.host = host;
         this.ctx = ctx;
         this.commands = resolveCommands(ctx);
@@ -43,8 +43,8 @@ public final class JsCtxBridge {
     /** Create (once) and return the JS ctx shim bound to this bridge. */
     public Value ctxShim() {
         if (shim == null) {
-            Value createCtx = host.eval(loadCtxJs());
-            shim = createCtx.execute(host.graalContext().asValue(this));
+            Value createCtx = host.evalValue(loadCtxJs());
+            shim = createCtx.execute(host.context().asValue(this));
         }
         return shim;
     }
@@ -109,7 +109,7 @@ public final class JsCtxBridge {
     @HostAccess.Export
     public Object get(String name) {
         Object svc = ctx.get(name);
-        if (svc != null && !(svc instanceof Value)) return new ServiceProxy(host.graalContext()).expose(svc);
+        if (svc != null && !(svc instanceof Value)) return new ServiceProxy(host.context()).expose(svc);
         return svc;
     }
 
@@ -184,40 +184,26 @@ public final class JsCtxBridge {
      * 故调用 {@code action.execute(jsArg, arg)}。session 提供 echo 用到的
      * {@code session.text(key)} 与 {@code session.guildId}。
      *
-     * <p>任务 3:布尔 flag 解析。按空白切 token,首个为命令名;其后 token 命中某 option 的
-     * 别名(alias,如 {@code -e})或长名({@code --escape})时置 {@code options[name]=true},
-     * 否则并入参数(多个参数以单个空格拼回消息文本)。值型 option(如 echo 的
-     * {@code -u [user:user]})留待后续任务(记 TODO),当前只做布尔 flag。
-     *
-     * <p>注:异步 action 返回 Promise,需 await 才能拿到最终回复(任务 6 echo 插件 spike 处理)。
+     * <p>布尔 flag 解析见 {@link CommandParser};异步 action 返回 Promise,需 await 才能
+     * 拿到最终回复(任务 6 echo 插件 spike 处理)。
      */
     public Object dispatchCommand(String message) {
-        String[] tokens = message.trim().split("\\s+");
-        if (tokens.length == 0) return null;
-        String name = tokens[0];
-        CommandEntry entry = commands.get(name);
+        CommandParser.Parsed parsed = CommandParser.parse(message, entryOptions(message));
+        if (parsed.name().isEmpty()) return null;
+        CommandEntry entry = commands.get(parsed.name());
         if (entry == null) return null;
-        // 解析布尔 flag:已知 option 的 alias(-x)或 --name 匹配 → options[name]=true;其余为参数
-        Map<String, Object> options = new LinkedHashMap<>();
-        List<String> args = new ArrayList<>();
-        for (int i = 1; i < tokens.length; i++) {
-            String t = tokens[i];
-            boolean matched = false;
-            for (Map<String, Object> o : entry.options) {
-                String optName = String.valueOf(o.get("name"));
-                String alias = String.valueOf(o.get("alias"));
-                if (t.equals(alias) || t.equals("--" + optName)) {
-                    options.put(optName, true);
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched) args.add(t);
-        }
-        String arg = String.join(" ", args);
-        Value jsArg = host.eval(
-                "({ session: { text: (key) => '[missing text: ' + key + ']', guildId: 'test-guild' }, options: " + toJsOptions(options) + " })");
-        return entry.action.execute(jsArg, arg);
+        Value jsArg = host.evalValue(
+                "({ session: { text: (key) => '[missing text: ' + key + ']', guildId: 'test-guild' }, options: "
+                        + toJsOptions(parsed.options()) + " })");
+        return entry.action.execute(jsArg, parsed.arg());
+    }
+
+    /** 取第一条命令名对应入口的 option 定义(供 CommandParser 匹配布尔 flag)。 */
+    private List<Map<String, Object>> entryOptions(String message) {
+        String[] tokens = message.trim().split("\\s+");
+        if (tokens.length == 0) return List.of();
+        CommandEntry entry = commands.get(tokens[0]);
+        return entry == null ? List.of() : entry.options;
     }
 
     /** 把解析出的 option 表序列化为 JS 对象字面量(当前仅布尔 flag,值恒为 true)。 */
