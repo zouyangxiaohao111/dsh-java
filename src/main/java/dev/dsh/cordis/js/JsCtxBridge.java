@@ -142,17 +142,15 @@ public final class JsCtxBridge {
     @HostAccess.Export
     public Object commandRegistry() {
         return (CommandRegistrar) (name, argDef, optionsArray, action) -> {
+            // optionsArray 自 JS 侧传入时,GraalJS 会把 JS 数组映射成 PolyglotList(Java List),
+            // 而不一定是 Value(空数组/无 option 场景此前未暴露)。两者都处理。
             List<Map<String, Object>> opts = new ArrayList<>();
             if (optionsArray instanceof Value v && v.hasArrayElements()) {
-                for (long i = 0; i < v.getArraySize(); i++) {
-                    Object o = v.getArrayElement(i);
-                    if (o instanceof Value elem && elem.hasMembers()) {
-                        Map<String, Object> map = new LinkedHashMap<>();
-                        for (String key : elem.getMemberKeys()) map.put(key, elem.getMember(key));
-                        opts.add(map);
-                    }
-                }
+                for (long i = 0; i < v.getArraySize(); i++) opts.add(toOptionMap(v.getArrayElement(i)));
+            } else if (optionsArray instanceof List<?> list) {
+                for (Object o : list) opts.add(toOptionMap(o));
             }
+            opts.removeIf(Map::isEmpty);
             commands.put(name, new CommandEntry(argDef, opts, action));
         };
     }
@@ -182,20 +180,65 @@ public final class JsCtxBridge {
      * <p>echo 的 action 签名是 {@code async ({ options, session }, message) => {...}}:
      * 第一个参数是被解构的 JS 对象 {@code { session, options }},第二个参数是剩余消息文本。
      * 故调用 {@code action.execute(jsArg, arg)}。session 提供 echo 用到的
-     * {@code session.text(key)} 与 {@code session.guildId}。options 未解析命令行 flag
-     * 时为空对象(无 flag 即无 option 值)。
+     * {@code session.text(key)} 与 {@code session.guildId}。
+     *
+     * <p>任务 3:布尔 flag 解析。按空白切 token,首个为命令名;其后 token 命中某 option 的
+     * 别名(alias,如 {@code -e})或长名({@code --escape})时置 {@code options[name]=true},
+     * 否则并入参数(多个参数以单个空格拼回消息文本)。值型 option(如 echo 的
+     * {@code -u [user:user]})留待后续任务(记 TODO),当前只做布尔 flag。
      *
      * <p>注:异步 action 返回 Promise,需 await 才能拿到最终回复(任务 6 echo 插件 spike 处理)。
      */
     public Object dispatchCommand(String message) {
-        String[] parts = message.trim().split("\\s+", 2);
-        String name = parts[0];
+        String[] tokens = message.trim().split("\\s+");
+        if (tokens.length == 0) return null;
+        String name = tokens[0];
         CommandEntry entry = commands.get(name);
         if (entry == null) return null;
-        String arg = parts.length > 1 ? parts[1] : "";
+        // 解析布尔 flag:已知 option 的 alias(-x)或 --name 匹配 → options[name]=true;其余为参数
+        Map<String, Object> options = new LinkedHashMap<>();
+        List<String> args = new ArrayList<>();
+        for (int i = 1; i < tokens.length; i++) {
+            String t = tokens[i];
+            boolean matched = false;
+            for (Map<String, Object> o : entry.options) {
+                String optName = String.valueOf(o.get("name"));
+                String alias = String.valueOf(o.get("alias"));
+                if (t.equals(alias) || t.equals("--" + optName)) {
+                    options.put(optName, true);
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) args.add(t);
+        }
+        String arg = String.join(" ", args);
         Value jsArg = host.eval(
-                "({ session: { text: (key) => '[missing text: ' + key + ']', guildId: 'test-guild' }, options: {} })");
+                "({ session: { text: (key) => '[missing text: ' + key + ']', guildId: 'test-guild' }, options: " + toJsOptions(options) + " })");
         return entry.action.execute(jsArg, arg);
+    }
+
+    /** 把解析出的 option 表序列化为 JS 对象字面量(当前仅布尔 flag,值恒为 true)。 */
+    private static String toJsOptions(Map<String, Object> options) {
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (Map.Entry<String, Object> e : options.entrySet()) {
+            if (!first) sb.append(", ");
+            first = false;
+            sb.append(e.getKey()).append(": ").append(e.getValue());
+        }
+        return sb.append("}").toString();
+    }
+
+    /** 把一条 option 定义(JS 对象或宿主 Map)转成 Java 表。元素既可能是 Value 也可能是 Map。 */
+    private static Map<String, Object> toOptionMap(Object o) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        if (o instanceof Value elem && elem.hasMembers()) {
+            for (String key : elem.getMemberKeys()) map.put(key, elem.getMember(key));
+        } else if (o instanceof Map<?, ?> m) {
+            for (Map.Entry<?, ?> e : m.entrySet()) map.put(String.valueOf(e.getKey()), e.getValue());
+        }
+        return map;
     }
 
     private Object[] toArgs(Value argsArray) {
