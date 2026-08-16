@@ -86,8 +86,7 @@ public final class PluginRuntimeResolver {
                     "detect() selected JAVA for " + abs + "; Java plugins load via ClassLoader (PluginReloader), not JsHost");
         }
         if (kind == HostKind.NODE) {
-            JsHost node = hostFactory.create(HostKind.NODE, requireCwd);
-            return new ResolvedJsPlugin(HostKind.NODE, node, new JsPluginAdapter(node, node.loadModule(abs)));
+            return loadNode(abs, requireCwd);
         }
         // ② 默认 GraalJS 试跑(静态检测为优化;正确性靠兜底)
         JsHost graal = hostFactory.create(HostKind.GRAAL, requireCwd);
@@ -96,11 +95,48 @@ public final class PluginRuntimeResolver {
         } catch (PolyglotException e) {
             if (!isMissingModule(e)) throw e;
             graal.close();
-            JsHost node = hostFactory.create(HostKind.NODE, requireCwd);
-            ResolvedJsPlugin resolved = new ResolvedJsPlugin(HostKind.NODE, node, new JsPluginAdapter(node, node.loadModule(abs)));
+            ResolvedJsPlugin resolved;
+            try {
+                resolved = loadNode(abs, requireCwd);
+            } catch (NodeBridgeError nbe) {
+                throw reportNodeFailure(abs, nbe);
+            }
             cache.put(abs, HostKind.NODE);   // 提升缓存:后续直接走 Node,不再试 Graal
             return resolved;
         }
+    }
+
+    /**
+     * Node 路径:创建 worker 加载模块;瞬时 worker 故障(进程死 / 请求超时 / 管道关闭)重建
+     * worker 重试一次(类 code-runtime 的失败回收),再失败转 {@link #reportNodeFailure} 明确上报
+     * (macrotask / top-level await 限制给可执行建议,其余原样透出)。
+     */
+    private ResolvedJsPlugin loadNode(Path abs, Path requireCwd) throws IOException {
+        JsHost node = hostFactory.create(HostKind.NODE, requireCwd);
+        try {
+            return new ResolvedJsPlugin(HostKind.NODE, node, new JsPluginAdapter(node, node.loadModule(abs)));
+        } catch (NodeBridgeError first) {
+            node.close();   // 无论是否重试,先回收故障 worker(避免 Windows 下其 cwd=插件目录锁泄漏)
+            if (!NodeWorkerJsHost.isRetryable(first)) throw reportNodeFailure(abs, first);
+            JsHost fresh = hostFactory.create(HostKind.NODE, requireCwd);
+            try {
+                return new ResolvedJsPlugin(HostKind.NODE, fresh, new JsPluginAdapter(fresh, fresh.loadModule(abs)));
+            } catch (NodeBridgeError second) {
+                fresh.close();
+                throw reportNodeFailure(abs, second);
+            }
+        }
+    }
+
+    /** 把 Node 宿主失败转成明确失败上报:macrotask / TLA 限制给可执行建议,其余原样透出。 */
+    private static NodeBridgeError reportNodeFailure(Path abs, NodeBridgeError e) {
+        if (NodeWorkerJsHost.isAsyncUnsupported(e)) {
+            return new NodeBridgeError("plugin '" + abs + "' cannot run on NodeWorkerJsHost: the module uses top-level "
+                    + "await or awaits a macrotask (timer / I/O) in apply, which the synchronous Node worker host cannot "
+                    + "await (see design doc 'NodeWorkerJsHost 同步宿主限制'). Restructure to avoid top-level await / "
+                    + "macrotask awaits, or use the GraalJS host for such plugins. Root cause: " + e.getMessage(), e);
+        }
+        return e;
     }
 
     // ---- 静态检测 ----

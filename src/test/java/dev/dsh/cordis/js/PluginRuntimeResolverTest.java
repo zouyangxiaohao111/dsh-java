@@ -60,6 +60,7 @@ class PluginRuntimeResolverTest {
 
     @Test
     void mjsPluginDetectsNodeAndRuns() throws Exception {
+        NodeEnv.assumeNode();   // 实际 loadJs → spawn Node worker
         Path plugin = write("esm.mjs", """
                 export const name = 'esm-p'
                 export function apply(ctx, config) {
@@ -174,10 +175,31 @@ class PluginRuntimeResolverTest {
         assertThat(resolver.detect(javaFile)).isEqualTo(HostKind.JAVA);
     }
 
+    /** TLA / macrotask 限制:resolver 明确失败上报(可执行建议),而非模糊的超时/崩溃。 */
+    @Test
+    void loadJsReportsAsyncLimitClearly() throws Exception {
+        NodeEnv.assumeNode();
+        Path dir = tmp.resolve("tla");
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve("package.json"), "{\"type\":\"module\"}");
+        Files.writeString(dir.resolve("index.js"), """
+                export const name = 'tla'
+                await Promise.resolve()
+                export function apply(ctx, config) {}
+                """);
+        PluginRuntimeResolver resolver = new PluginRuntimeResolver();
+        assertThat(resolver.detect(dir.resolve("index.js"))).isEqualTo(HostKind.NODE);
+        assertThatThrownBy(() -> resolver.loadJs(dir.resolve("index.js")))
+                .isInstanceOf(NodeBridgeError.class)
+                .hasMessageContaining("cannot run on NodeWorkerJsHost")
+                .hasMessageContaining("top-level");
+    }
+
     // ---- 运行时兜底 ----
 
     @Test
     void runtimeFallbackToNodeWhenGraalMissingModule() throws Exception {
+        NodeEnv.assumeNode();   // 兜底路径 spawn Node worker
         // 静态检测漏掉(动态拼 specifier),GraalJS 加载缺模块 → dispose → Node worker 重试
         Path plugin = write("fb.cjs", """
                 require('child_' + 'process')
@@ -244,6 +266,7 @@ class PluginRuntimeResolverTest {
     /** JsPluginReloader 经 resolver 选宿主:.mjs(ESM)→ Node worker,热重载仍成立。 */
     @Test
     void jsPluginReloaderRoutesEsmToNode() throws Exception {
+        NodeEnv.assumeNode();   // loadJs → spawn Node worker
         Path file = tmp.resolve("p.mjs");
         Files.writeString(file, "export function apply(ctx) { ctx.on('go', () => ctx.emit('done', 'esm-v1')); }");
         Context root = new Context();

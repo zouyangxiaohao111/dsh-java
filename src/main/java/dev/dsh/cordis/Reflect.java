@@ -171,7 +171,18 @@ public final class Reflect {
         }, "ctx.mixin(" + source + ")");
     }
 
-    /** Accessor forwarding one `key` of a service named `source` (reflect.ts:373-388). */
+    /**
+     * Accessor forwarding one `key` of a service named `source` (reflect.ts:373-388).
+     *
+     * <p><b>bind 语义(P3 审计)</b>:reflect.ts 的 mixin 把方法绑定到
+     * {@code withProps(receiver, service)}(receiver 属性优先、service 兜底的合成对象),
+     * 使方法内 {@code this.xxx} 能先读 ctx 属性再读 service 字段。Java 侧
+     * {@link Context#get} 传给 accessor 的 {@code receiver} 恒为 {@code null}
+     * (Java 的 ctx 访问是静态方法调用,没有 receiver 对象),故 mixin = service,
+     * {@link #bindMethod} 用 {@code bindTo(service)} 绑定到服务实例——与参考实现
+     * receiver 为 null 时的路径一致。要让普通 Java 服务类方法内 {@code this} 读到
+     * ctx 属性,需字节码/子类生成来合成 receiver,本项目不做;现有服务类不使用
+     * {@code this} 读 ctx,保持 bindTo 现状。 */
     private Property.Accessor mixinAccessor(String source, String key) {
         return new Property.Accessor(
                 (ctx, receiver) -> {
@@ -219,18 +230,45 @@ public final class Reflect {
         }
     }
 
-    /** First public instance method with the given name (any arity), or null. */
+    /** First public instance method with the given name (any arity), or null.
+     *  类层级(含父类)优先;接口(含父接口,含 default 方法)兜底——mixin 转发
+     *  一个接口方法时,即使实现类未显式 override 也能经接口 MethodHandle 调用。 */
     private static Method findPublicMethod(Class<?> cls, String key) {
         for (Class<?> c = cls; c != null; c = c.getSuperclass()) {
-            for (Method m : c.getDeclaredMethods()) {
-                if (m.getName().equals(key)
-                        && Modifier.isPublic(m.getModifiers())
-                        && !Modifier.isStatic(m.getModifiers())) {
-                    return m;
-                }
+            Method m = findDeclared(c, key);
+            if (m != null) return m;
+        }
+        for (Class<?> itf : allInterfaces(cls)) {
+            Method m = findDeclared(itf, key);
+            if (m != null) return m;
+        }
+        return null;
+    }
+
+    private static Method findDeclared(Class<?> c, String key) {
+        for (Method m : c.getDeclaredMethods()) {
+            if (m.getName().equals(key)
+                    && Modifier.isPublic(m.getModifiers())
+                    && !Modifier.isStatic(m.getModifiers())) {
+                return m;
             }
         }
         return null;
+    }
+
+    /** 类的全部接口(含父接口,去重)。 */
+    private static List<Class<?>> allInterfaces(Class<?> cls) {
+        LinkedHashSet<Class<?>> out = new LinkedHashSet<>();
+        collectInterfaces(cls, out);
+        return new ArrayList<>(out);
+    }
+
+    private static void collectInterfaces(Class<?> cls, Set<Class<?>> out) {
+        if (cls == null) return;
+        for (Class<?> itf : cls.getInterfaces()) {
+            if (out.add(itf)) collectInterfaces(itf, out);
+        }
+        collectInterfaces(cls.getSuperclass(), out);
     }
 
     /** First public instance field with the given name, or null. */
@@ -245,8 +283,10 @@ public final class Reflect {
         return null;
     }
 
-    /** Bind a public method to its service instance (JS `value.bind(service)` equivalent).
-     *  Falls back to the raw {@link Method} when a bound handle is not obtainable. */
+    /** Bind a public method to its service instance (JS `value.bind(service)` equivalent,
+     *  即参考实现 receiver 为 null 时的 {@code value.bind(service)} 路径——见
+     *  {@link #mixinAccessor} 的 bind 语义说明)。Falls back to the raw {@link Method}
+     *  when a bound handle is not obtainable. */
     private static Object bindMethod(Object service, Method method) {
         try {
             return MethodHandles.lookup().unreflect(method).bindTo(service);

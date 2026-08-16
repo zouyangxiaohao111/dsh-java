@@ -48,11 +48,13 @@ public final class NodePluginModule implements PluginModule {
             return CompletableFuture.completedFuture(null);
         }, "node-js-ctx-release");
 
-        // JS 插件返回 disposer 函数 → 注册为 fiber effect(卸载时经 RPC 调用)
+        // JS 插件返回 disposer 函数 → 注册为 fiber effect(卸载时经 RPC 调用);
+        // 跑完后释放跨桥 fn 句柄(disposer 语义上只跑一次)。
         if (result instanceof NodeRef r && "fn".equals(r.kind())) {
             NodeRef disposer = r;
             ctx.effect(() -> (Disposable) () -> {
                 host.invokeFn(disposer, List.of());
+                host.releaseFn(disposer);
                 return CompletableFuture.completedFuture(null);
             }, "node-js-plugin-disposer");
         }

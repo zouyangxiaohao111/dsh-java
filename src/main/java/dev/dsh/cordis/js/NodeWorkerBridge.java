@@ -84,8 +84,10 @@ public final class NodeWorkerBridge {
         Disposable disposable = once
                 ? ctx.once(name, l, new Events.EventOptions().prepend(prepend).global(global))
                 : ctx.on(name, l, new Events.EventOptions().prepend(prepend).global(global));
-        // 监听器随 fiber 卸载自动移除(与 cordis 语义一致)
-        ctx.effect(() -> disposable, "node-js-listener");
+        // 监听器随 fiber 卸载自动移除(与 cordis 语义一致);移除后释放跨桥 fn 句柄,
+        // 防止 worker 侧 fnById 累积(热重载/反复 on 的插件长时间跑会泄漏)。
+        ctx.effect(() -> (Disposable) () -> disposable.dispose()
+                .thenRun(() -> host.releaseFn(listener)), "node-js-listener");
         return NullNode.instance;
     }
 
@@ -128,6 +130,7 @@ public final class NodeWorkerBridge {
         NodeRef disposer = fnRef(args.get(0));
         ctx.effect(() -> (Disposable) () -> {
             host.invokeFn(disposer, List.of());
+            host.releaseFn(disposer);   // disposer 只跑一次(卸载时),跑完即回收句柄
             return CompletableFuture.completedFuture(null);
         }, "node-js-effect");
         return NullNode.instance;

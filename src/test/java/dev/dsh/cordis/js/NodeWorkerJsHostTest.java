@@ -1,6 +1,7 @@
 package dev.dsh.cordis.js;
 
 import dev.dsh.cordis.Context;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -25,6 +26,12 @@ class NodeWorkerJsHostTest {
 
     @TempDir
     Path tmp;
+
+    /** 无 node 可执行时整个测试类 skip(P3 可移植性;构建在无 Node 环境仍全绿)。 */
+    @BeforeEach
+    void assumeNode() {
+        NodeEnv.assumeNode();
+    }
 
     private Path writePlugin(String name, String content) throws Exception {
         Path p = tmp.resolve(name);
@@ -132,6 +139,26 @@ class NodeWorkerJsHostTest {
             assertThat(String.valueOf(bridge.dispatchCommand("echo hello"))).isEqualTo("echo: hello");
         }
         root.fiber.dispose().join();
+    }
+
+    /** 模块用 top-level await(TLA)→ 同步宿主无法 await,失败上报为明确错误(不挂死、不崩溃)。 */
+    @Test
+    void topLevelAwaitModuleFailsCleanlyWithClearError() throws Exception {
+        Path plugin = tmp.resolve("tla-plugin");
+        Files.createDirectories(plugin);
+        Files.writeString(plugin.resolve("package.json"), "{\"type\":\"module\"}");
+        Files.writeString(plugin.resolve("index.js"), """
+                export const name = 'tla'
+                await Promise.resolve()
+                export function apply(ctx, config) {}
+                """);
+        try (NodeWorkerJsHost host = new NodeWorkerJsHost()) {
+            assertThatThrownBy(() -> host.loadModule(plugin.resolve("index.js")))
+                    .isInstanceOf(NodeBridgeError.class)
+                    .hasMessageContaining("top-level await");
+            // 宿主仍存活:后续请求正常(失败不拖垮整个 worker)
+            host.loadModule(writePlugin("ok.cjs", "module.exports = { apply(ctx) {} }"));
+        }
     }
 
     @Test

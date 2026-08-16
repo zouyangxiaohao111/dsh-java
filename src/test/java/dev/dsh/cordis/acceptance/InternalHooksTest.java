@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.invoke.MethodHandle;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -20,6 +21,16 @@ public class InternalHooksTest {
         public int count = 0;
         public int next() { return ++count; }
         public int current() { return count; }
+    }
+
+    /** 接口 default 方法转发用(P3:mixin 兜底扫接口)。 */
+    public interface Greeter {
+        default String greet() { return "hello from " + tag(); }
+        String tag();
+    }
+
+    public static final class GreeterService implements Greeter {
+        public String tag() { return "svc"; }
     }
 
     /** internal/config waterfall 在 schema 校验前改写原始配置(fiber.ts:641-644)。 */
@@ -63,7 +74,9 @@ public class InternalHooksTest {
         f.await().join();
         assertThat(applies.get()).isEqualTo(1);
 
-        f.update(new LinkedHashMap<>(Map.of("k", 1)), false).join();
+        // fiber.ts:753 契约:update 返回 waterfall 结果——veto 值(非 future)原样透出
+        Object veto = f.update(new LinkedHashMap<>(Map.of("k", 1)), false);
+        assertThat(veto).isEqualTo("vetoed");   // 未包空 CF,否决值可见
         assertThat(hookCalls.get()).isEqualTo(1);
         assertThat(applies.get()).isEqualTo(1);   // 未重启
 
@@ -92,7 +105,7 @@ public class InternalHooksTest {
         f.await().join();
         assertThat(applies.get()).isEqualTo(1);
 
-        f.update(new LinkedHashMap<>(Map.of("k", 1)), false).join();
+        ((CompletableFuture<?>) f.update(new LinkedHashMap<>(Map.of("k", 1)), false)).join();
         assertThat(applies.get()).isEqualTo(2);   // 已重启
         @SuppressWarnings("unchecked")
         Map<String, Object> applied = (Map<String, Object>) seen.get();
@@ -129,7 +142,7 @@ public class InternalHooksTest {
         f.await().join();
         order.clear();
 
-        f.update(new LinkedHashMap<>(Map.of("k", 1)), false).join();
+        ((CompletableFuture<?>) f.update(new LinkedHashMap<>(Map.of("k", 1)), false)).join();
         assertThat(order).containsExactly("fiber-hook", "global-before", "global-after");
         assertThat(applies.get()).isEqualTo(2);
         f.dispose().join();
@@ -242,5 +255,24 @@ public class InternalHooksTest {
         renamed.dispose();
         assertThat((Object) root.get("count")).isNull();   // accessor 已移除
         assertThat((Object) root.get("total")).isNull();
+    }
+
+    /** mixin 转发接口方法(含 default 方法):findPublicMethod 兜底扫接口,绑定到服务实例。 */
+    @Test
+    void mixinForwardsInterfaceDefaultMethods() throws Throwable {
+        Context root = new Context();
+        GreeterService svc = new GreeterService();
+        root.provide("greeter", svc);
+
+        Disposable mixin = root.mixin("greeter", List.of("greet", "tag"));
+
+        Object greet = root.get("greet");
+        assertThat(greet).isInstanceOf(MethodHandle.class);
+        assertThat(((MethodHandle) greet).invokeWithArguments()).isEqualTo("hello from svc");
+        Object tag = root.get("tag");
+        assertThat(((MethodHandle) tag).invokeWithArguments()).isEqualTo("svc");
+
+        mixin.dispose();
+        assertThat((Object) root.get("greet")).isNull();
     }
 }

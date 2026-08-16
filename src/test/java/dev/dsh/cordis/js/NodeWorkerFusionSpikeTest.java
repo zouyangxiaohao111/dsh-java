@@ -1,6 +1,7 @@
 package dev.dsh.cordis.js;
 
 import dev.dsh.cordis.Context;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -44,6 +45,12 @@ class NodeWorkerFusionSpikeTest {
             definitions.add(definition);
             return null;
         }
+    }
+
+    /** 无 node 可执行时整个测试类 skip(P3 可移植性)。 */
+    @BeforeEach
+    void assumeNode() {
+        NodeEnv.assumeNode();
     }
 
     private static Path resource(String rel) {

@@ -21,6 +21,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -204,6 +205,16 @@ public final class NodeWorkerJsHost implements JsHost {
         sendNoWait("releaseCtx", jsonOf("ctx", ctx.id()));
     }
 
+    /**
+     * 释放一个远程 fn 句柄(worker 侧删除注册表条目)。fire-and-forget:发送即返回,
+     * worker 按 id 回复 result 但 Java 侧无对应 future,忽略。句柄耗尽即回收,
+     * 防止长生命周期宿主(跨多次插件加载/热重载)在 worker 侧 fnById 累积泄漏。
+     */
+    void releaseFn(NodeRef fn) {
+        if (fn == null || !"fn".equals(fn.kind())) return;
+        sendNoWait("release", jsonOf("handle", fn.id()));
+    }
+
     /** 把一个 Java 对象注册为远程服务,返回 svc 句柄。 */
     NodeRef registerService(Object svc) {
         long id = serviceSeq.getAndIncrement();
@@ -219,6 +230,27 @@ public final class NodeWorkerJsHost implements JsHost {
     }
 
     boolean isReaderThread(Thread t) { return t == readerThread; }
+
+    // ---- 错误分类(resolver 兜底用)----
+
+    /** 确定性限制:macrotask await / top-level await(同步宿主无法等待,重试无益)→ 明确失败上报。 */
+    static boolean isAsyncUnsupported(Throwable t) {
+        String m = t == null ? null : String.valueOf(t.getMessage());
+        if (m == null) return false;
+        String lower = m.toLowerCase(Locale.ROOT);
+        return lower.contains("macrotask")
+                || lower.contains("top-level await")
+                || lower.contains("did not settle synchronously");
+    }
+
+    /** 瞬时 worker 故障(进程死 / 超时 / 管道关闭)——值得重建 worker 重试一次。 */
+    static boolean isRetryable(NodeBridgeError e) {
+        String m = String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT);
+        return m.contains("timed out")
+                || m.contains("process exited")
+                || m.contains("stdout closed")
+                || m.contains("not alive");
+    }
 
     /** 测试用:强制杀死进程(阻塞至终止),验证崩溃检测。 */
     void killForTest() {

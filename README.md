@@ -67,6 +67,10 @@ cd dsh-java
 ./gradlew test          # 43+ 测试全绿
 ```
 
+> **前置依赖**:③ Node worker 宿主(ESM / native / 重 Node 插件)需要系统有 `node` 可执行
+> (可通过环境变量 `NODE` 指定路径)。无 Node 时依赖它的测试会被 JUnit Assumption 自动
+> **skip**(构建保持全绿),③ 宿主对应的插件加载会在运行时报错;①② 宿主与 Java 插件不受影响。
+
 一个最小示例——Java 提供服务,JS 插件调用并回传:
 
 ```java

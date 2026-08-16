@@ -287,30 +287,29 @@ public final class Fiber {
 
     /** Validate and apply new config, then restart through the `internal/update`
      *  waterfall (fiber.ts:736-753); update hooks may veto the restart by not
-     *  calling `next`. */
-    public CompletableFuture<Void> update(Object config, boolean noSave) {
+     *  calling `next`.
+     *
+     *  <p>返回契约镜像 fiber.ts:753:waterfall 的结果<b>原样透出</b>——默认路径返回
+     *  {@code restart()} 的 {@link CompletableFuture};veto 路径返回否决值本身(非
+     *  future,如 {@code false} / 自定义标记),不包一层空 CF(调用方据此区分"已重启"
+     *  与"被否决")。fiber 非 ACTIVE 时直接返回 {@code null}(fiber.ts:739-745)。 */
+    public Object update(Object config, boolean noSave) {
         assertActive();
         this._config = config;
         if (this.state != FiberState.ACTIVE) {
             this._error = null;
             this.epoch = INACTIVE;
             this.refresh();
-            return CompletableFuture.completedFuture(null);
+            return null;
         }
         config = resolveConfig(config);
         final Object resolved = config;
-        Object result = this.context.waterfall(this.ctx, "internal/update", resolved, noSave,
+        return this.context.waterfall(this.ctx, "internal/update", resolved, noSave,
                 (Events.Listener) (ctx, args) -> {
                     this.config = resolved;
                     this._error = null;
                     return restart();
                 });
-        if (result instanceof CompletableFuture<?> cf) {
-            @SuppressWarnings("unchecked")
-            CompletableFuture<Void> future = (CompletableFuture<Void>) cf;
-            return future;
-        }
-        return CompletableFuture.completedFuture(null);   // vetoed — restart skipped
     }
 
     /** Dispose this fiber: unload, then settle once cleanup finished. */

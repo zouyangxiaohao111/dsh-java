@@ -196,16 +196,19 @@ function parseCommandDef(def) {
 }
 
 // ---- 同步等待一个 Promise(仅 microtask 链;macrotask 会超时抛错)----
-const TICK_BUDGET = 100000000
+// 墙钟预算兜底:microtask 链经 _tickCallback 泵动可在首轮 settle;macrotask(timer/I/O)
+// 永远无法同步 settle,预算耗尽即抛错(失败上报要快,不能烧满 CPU)。预算给足 1s,
+// 远大于正常 microtask 链的 settle 时间,只对真正的 macrotask 依赖生效。
+const SYNC_WAIT_BUDGET_MS = 1000
 function syncWaitPromise(p, what) {
   let done = false
   let value
   let error
   p.then((v) => { value = v; done = true }, (e) => { error = e; done = true })
-  let ticks = 0
+  const deadline = Date.now() + SYNC_WAIT_BUDGET_MS
   while (!done) {
     process._tickCallback()
-    if (++ticks > TICK_BUDGET) {
+    if (Date.now() >= deadline) {
       throw new Error('async result for ' + what + ' did not settle synchronously (macrotask await unsupported on NodeWorkerJsHost)')
     }
   }
@@ -246,7 +249,17 @@ function handleRequest(msg) {
     case 'require': {
       const file = msg.file || msg.specifier
       if (typeof file !== 'string' || !file) throw new Error('bad module specifier')
-      const mod = require(file)
+      let mod
+      try {
+        mod = require(file)
+      } catch (e) {
+        // ESM top-level await → Node 抛 ERR_REQUIRE_ASYNC_MODULE。同步宿主无法 await,
+        // 归类为明确限制(Java 侧 resolver 据此做失败上报,而非当普通加载错误)。
+        if (e && (e.code === 'ERR_REQUIRE_ASYNC_MODULE' || /top-level await/i.test(String(e.message)))) {
+          throw new Error('plugin module uses top-level await, unsupported on NodeWorkerJsHost (sync host) — restructure without top-level await: ' + file)
+        }
+        throw e
+      }
       const id = nextHandle++
       modById.set(id, mod)
       const meta = pluginMeta(mod)
