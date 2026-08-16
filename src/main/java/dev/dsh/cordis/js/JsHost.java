@@ -1,6 +1,7 @@
 package dev.dsh.cordis.js;
 
 import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.Value;
 
 import java.nio.file.Path;
@@ -11,6 +12,8 @@ public final class JsHost implements AutoCloseable {
 
     public JsHost() {
         this.context = Context.newBuilder("js")
+                // M2 可信插件假设:允许 JS 调用 Java 服务公共成员,跨语言服务无需每类 @HostAccess.Export 注解
+                .allowHostAccess(HostAccess.ALL)
                 .allowExperimentalOptions(true)
                 .allowIO(true)
                 .option("js.commonjs-require", "true")
@@ -19,6 +22,8 @@ public final class JsHost implements AutoCloseable {
 
     public JsHost(Path requireCwd) {
         this.context = Context.newBuilder("js")
+                // M2 可信插件假设:允许 JS 调用 Java 服务公共成员,跨语言服务无需每类 @HostAccess.Export 注解
+                .allowHostAccess(HostAccess.ALL)
                 .allowExperimentalOptions(true)
                 .allowIO(true)
                 .option("js.commonjs-require", "true")

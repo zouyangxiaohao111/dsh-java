@@ -93,7 +93,12 @@ public final class JsCtxBridge {
     private static Object unwrap(Value v) {
         if (v.isString()) return v.asString();
         if (v.isBoolean()) return v.asBoolean();
-        if (v.isNumber()) return v.fitsInLong() ? v.asLong() : v.asDouble();
+        if (v.isNumber()) {
+            // 注意:不能用 `v.fitsInLong() ? v.asLong() : v.asDouble()` — 三元表达式在
+            // long/double 之间做二进制数值提升,结果类型为 double,连整数也会被转成 Double。
+            if (v.fitsInLong()) return v.asLong();
+            return v.asDouble();
+        }
         return v;
     }
 
