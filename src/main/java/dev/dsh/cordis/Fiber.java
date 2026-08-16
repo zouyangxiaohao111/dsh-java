@@ -50,7 +50,7 @@ public final class Fiber {
         this.inject = inject;
         this.runtime = runtime;
         this.uid = runtime == null ? 0 : parent.registry.counter();
-        this.ctx = runtime == null ? parent : parent.extend();
+        this.ctx = runtime == null ? parent : parent.extend(Map.of("fiber", this));
         this.context = this.ctx;
         this.ctx.fiber = this;   // rebind: plugin context's fiber is this fiber (fiber.ts:236)
 
@@ -205,16 +205,19 @@ public final class Fiber {
         }
     }
 
-    /** Load the plugin: resolve config, run apply (fiber.ts:646-673). */
+    /** Load the plugin: resolve config, run apply (fiber.ts:646-673). The root fiber
+     *  has no runtime callback — its reload only re-resolves config (fiber.ts:250-252). */
     @SuppressWarnings("unchecked")
     CompletableFuture<Void> reload() {
         this.store = storeSnapshot();
         String oldEpoch = this.epoch;
         try {
             this.config = resolveConfig(this._config);
-            Object result = ((Plugin<Object>) this.runtime.callback).apply(this.ctx, this.config);
-            if (result instanceof CompletableFuture<?> cf) {
-                ((CompletableFuture<Void>) cf).join();   // 等待异步 apply 完成(同步模型下 join 务实)
+            if (this.runtime != null) {
+                Object result = ((Plugin<Object>) this.runtime.callback).apply(this.ctx, this.config);
+                if (result instanceof CompletableFuture<?> cf) {
+                    ((CompletableFuture<Void>) cf).join();   // 等待异步 apply 完成(同步模型下 join 务实)
+                }
             }
             this._error = null;
         } catch (Throwable t) {
@@ -300,9 +303,11 @@ public final class Fiber {
         return CompletableFuture.completedFuture(null);
     }
 
-    /** Dispose and immediately reload with current config (fiber.ts:718-723). */
+    /** Dispose and immediately reload with current config (fiber.ts:718-723).
+     *  The root fiber restarts in place (fiber.ts:331), never leaving ACTIVE. */
     public CompletableFuture<Void> restart() {
         assertActive();
+        if (this.runtime == null) return restartRoot();
         setEpoch(INACTIVE);  // 若 ACTIVE,先卸载旧 effects
         refresh();           // 重算依赖,可触发 reload
         return awaitInternal().thenApply(v -> null);
@@ -335,8 +340,18 @@ public final class Fiber {
                 });
     }
 
-    /** Dispose this fiber: unload, then settle once cleanup finished. */
+    /** Dispose this fiber (fiber.ts:331, 718-723).
+     *  Plugin fibers tear down fully to {@link FiberState#DISPOSED}. The root fiber
+     *  mirrors JS — {@code dispose = restart}: run non-builtin disposables (including
+     *  the plugin cascade) then re-activate, keeping the context usable. Use
+     *  {@link #shutdown()} for a full root teardown. */
     public CompletableFuture<Void> dispose() {
+        if (this.runtime == null) return restartRoot();
+        return shutdown();
+    }
+
+    /** Full teardown to {@link FiberState#DISPOSED} — app-level shutdown for the root fiber. */
+    public CompletableFuture<Void> shutdown() {
         if (this.state == FiberState.DISPOSED) return CompletableFuture.completedFuture(null);
         this.epoch = INACTIVE;   // unload 不得重载 ACTIVE fiber
         CompletableFuture<Void> done = unload();
@@ -347,6 +362,28 @@ public final class Fiber {
                 this.runtime.fibers.delete(this);   // 除名,防止 notify 复活(fiber.ts:266-275)
             }
         });
+    }
+
+    /** Root fiber dispose = restart (fiber.ts:331): unload current disposables, then
+     *  re-activate; the root never transitions to DISPOSED. JS settles the root in
+     *  PENDING via its epoch machinery; Java keeps ACTIVE so the root remains a usable
+     *  container (the built-in services are unaffected — cleared in Context#Context). */
+    private CompletableFuture<Void> restartRoot() {
+        if (this.state == FiberState.DISPOSED) return CompletableFuture.completedFuture(null);
+        setState(FiberState.UNLOADING);
+        this.epoch = INACTIVE;
+        CompletableFuture<Void> done = unload();
+        return done.thenAccept(v -> {
+            this._error = null;
+            this.state = FiberState.ACTIVE;
+        });
+    }
+
+    /** Remove the built-in service effects from the root fiber so a root
+     *  dispose/restart does not tear down the core services (context.ts:82). */
+    void clearRootEffects() {
+        this._disposables.clear();
+        this._effectMeta.clear();
     }
 
     private Map<String, Reflect.Impl> storeSnapshot() {

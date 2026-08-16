@@ -1,6 +1,7 @@
 package dev.dsh.cordis;
 
 import dev.dsh.cordis.util.Disposable;
+import dev.dsh.cordis.util.Symbols;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -34,6 +35,12 @@ public final class Context {
     Context shadow;
     Object receiver;
 
+    /** Returns true for Cordis contexts (context.ts:61-68). Java contexts are plain
+     *  objects (no proxy/weak brand), so the brand check is a type test. */
+    public static boolean is(Object value) {
+        return value instanceof Context;
+    }
+
     /** Create the root context and install built-in services (context.ts:71-84). */
     public Context() {
         this.parent = null;
@@ -43,39 +50,69 @@ public final class Context {
         this.registry = new Registry(this);
         this.events = new Events(this);
         this.logger = new LoggerService(this);
-    }
-
-    private Context(Context parent, Map<String, String> isolate, Map<String, Object> intercept) {
-        this.parent = parent;
-        this.root = parent.root;
-        this.baseUrl = parent.baseUrl;
-        if (isolate != null) this.isolate.putAll(isolate);
-        if (intercept != null) this.intercept.putAll(intercept);
-        this.reflect = parent.reflect;    // shared, root-level
-        this.registry = parent.registry;  // shared
-        this.events = parent.events;      // shared
-        this.logger = parent.logger;      // shared
-        this.fiber = parent.fiber;        // replaced when plugin creates child (see Registry.plugin)
-        this.filter = parent.filter;
+        this.fiber.clearRootEffects();   // context.ts:82 — built-in service effects survive root dispose
     }
 
     /** Create a child context inheriting from this one (context.ts:99-107). */
     public Context extend() {
-        return new Context(this, null, null);
+        return new Context(this, null);
     }
 
-    /** Create a child with an independent service scope for `name` (context.ts:121-125). */
+    /** Create a child context with extra metadata on top of the current scope.
+     *  Own entries of `meta` shadow the inherited ones (context.ts:99-107).
+     *  Supported meta keys: {@link Symbols#ISOLATE} / {@link Symbols#INTERCEPT}
+     *  (scope maps), {@code "fiber"}, {@code "baseUrl"}. */
+    public Context extend(Map<String, Object> meta) {
+        return new Context(this, meta);
+    }
+
+    /** Create a child with an independent service scope for `name`, in a fresh label (context.ts:121-125). */
     public Context isolate(String name) {
+        return isolate(name, null);
+    }
+
+    /** Create a child with an independent service scope for `name` under the given
+     *  `label`; passing the same label to two isolates joins their scopes (context.ts:121-125). */
+    public Context isolate(String name, String label) {
+        if (label == null) label = name + "@" + System.identityHashCode(new Object());
         Map<String, String> iso = new HashMap<>();
-        iso.put(name, name + "@" + System.identityHashCode(new Object()));
-        return new Context(this, iso, null);
+        iso.put(name, label);
+        return extend(Map.of(Symbols.ISOLATE, iso));
     }
 
     /** Add service-specific intercept config for plugins below (context.ts:139-145). */
     public Context intercept(String name, Object config) {
         Map<String, Object> ic = new HashMap<>();
         ic.put(name, config);
-        return new Context(this, null, ic);
+        return extend(Map.of(Symbols.INTERCEPT, ic));
+    }
+
+    private Context(Context parent, Map<String, Object> meta) {
+        this.parent = parent;
+        this.root = parent.root;
+        this.baseUrl = parent.baseUrl;
+        this.reflect = parent.reflect;    // shared, root-level
+        this.registry = parent.registry;  // shared
+        this.events = parent.events;      // shared
+        this.logger = parent.logger;      // shared
+        this.fiber = parent.fiber;        // replaced when plugin creates child (see Registry.plugin)
+        this.filter = parent.filter;
+        if (meta != null) {
+            Object iso = meta.get(Symbols.ISOLATE);
+            if (iso instanceof Map<?, ?> m) {
+                for (Map.Entry<?, ?> e : m.entrySet()) {
+                    this.isolate.put(String.valueOf(e.getKey()), String.valueOf(e.getValue()));
+                }
+            }
+            Object ic = meta.get(Symbols.INTERCEPT);
+            if (ic instanceof Map<?, ?> m) {
+                for (Map.Entry<?, ?> e : m.entrySet()) {
+                    this.intercept.put(String.valueOf(e.getKey()), e.getValue());
+                }
+            }
+            if (meta.containsKey("fiber") && meta.get("fiber") instanceof Fiber f) this.fiber = f;
+            if (meta.containsKey("baseUrl")) this.baseUrl = String.valueOf(meta.get("baseUrl"));
+        }
     }
 
     // ---- service resolution (reflect.ts:135-206 proxy handler, Java-ized) ----
@@ -210,6 +247,6 @@ public final class Context {
     }
 
     public Logger logger() {
-        return this.logger.current();
+        return this.logger.current(this);   // caller ctx → caller fiber name (utils.ts traceable)
     }
 }

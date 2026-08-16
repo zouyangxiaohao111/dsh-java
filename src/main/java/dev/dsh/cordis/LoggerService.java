@@ -38,12 +38,22 @@ public final class LoggerService extends Service {
     /** Logger derived from the calling fiber's name (default `ctx.logger()` behavior).
      *  注意:M1 未消费 `ctx.intercept('logger', ...)` 的 name/level 配置(对应 logger.ts invoke 体的 _resolveConfig),如需请后续补。 */
     public Logger current() {
-        return get(ctx.fiber.name());
+        return current(ctx);
+    }
+
+    /** Logger derived from an explicit caller context's fiber (utils.ts:117-233
+     *  traceable 简化移植:JS 在服务方法调用时把 this.ctx 重绑定到调用方;Java 服务
+     *  无状态且方法显式接收调用方 ctx,这里把调用方 fiber 名直接透传给 logger)。 */
+    public Logger current(Context caller) {
+        return get(caller.fiber.name());
     }
 
     void emit(Message message, int fallbackLevel) {
         for (Exporter exporter : exporters.values()) {
-            if (fallbackLevel < message.level()) continue;
+            // logger.ts:155 — per-exporter threshold: name-specific, else "default", else logger level
+            Map<String, Integer> levels = exporter.levels();
+            int targetLevel = levels.getOrDefault(message.name(), levels.getOrDefault("default", fallbackLevel));
+            if (targetLevel < message.level()) continue;
             exporter.export(message);
         }
     }
