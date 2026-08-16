@@ -27,6 +27,9 @@ public final class JsPluginAdapter implements Plugin<Object> {
     @Override public String[] inject() { return inject; }
     @Override public String[] provide() { return provide; }
 
+    /** The underlying JsHost backing this adapter (hot-reload closes it on swap). */
+    public JsHost host() { return host; }
+
     @Override
     public Object apply(Context ctx, Object config) {
         JsCtxBridge bridge = new JsCtxBridge(host, ctx);
