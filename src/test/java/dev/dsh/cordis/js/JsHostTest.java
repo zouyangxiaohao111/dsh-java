@@ -13,7 +13,7 @@ class JsHostTest {
         Path dir = Files.createTempDirectory("dsh-js-host");
         Path mod = dir.resolve("greeter.js");
         Files.writeString(mod, "module.exports = { greet: (n) => 'hi ' + n }");
-        try (JsHost host = new JsHost(dir)) {
+        try (JsHost host = new GraalJsHost(dir)) {
             Value exports = host.loadModule(mod);
             Value greet = exports.getMember("greet");
             assertThat(greet.canExecute()).isTrue();

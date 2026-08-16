@@ -17,7 +17,7 @@ class NextChainTest {
     @Test
     void listenerNextDelegatesToFollowing() throws Exception {
         Context root = new Context();
-        try (JsHost host = new JsHost()) {
+        try (JsHost host = new GraalJsHost()) {
             AtomicReference<String> javaGot = new AtomicReference<>();
             // Java 监听器最先注册:主 dispatch 最先收到原始参数
             root.on("chain", (c, args) -> { javaGot.set("java-first:" + args[0]); return null; });
@@ -43,7 +43,7 @@ class NextChainTest {
     @Test
     void nextDelegatesToJavaListenerRegisteredAfter() throws Exception {
         Context root = new Context();
-        try (JsHost host = new JsHost()) {
+        try (JsHost host = new GraalJsHost()) {
             AtomicReference<String> javaGot = new AtomicReference<>();
 
             org.graalvm.polyglot.Value fn = host.eval(
@@ -69,7 +69,7 @@ class NextChainTest {
     @Test
     void listenerWithoutNextReceivesPlainArgs() throws Exception {
         Context root = new Context();
-        try (JsHost host = new JsHost()) {
+        try (JsHost host = new GraalJsHost()) {
             AtomicReference<String> got = new AtomicReference<>();
 
             org.graalvm.polyglot.Value fn = host.eval(
@@ -88,7 +88,7 @@ class NextChainTest {
     @Test
     void prependOptionPutsJsListenerFirst() throws Exception {
         Context root = new Context();
-        try (JsHost host = new JsHost()) {
+        try (JsHost host = new GraalJsHost()) {
             Recorder rec = new Recorder();
             root.provide("rec", rec);
             root.on("p", (c, args) -> { rec.add("java"); return null; });

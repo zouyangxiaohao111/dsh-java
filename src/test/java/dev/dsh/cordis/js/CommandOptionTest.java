@@ -7,7 +7,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CommandOptionTest {
     @Test
     void echoEscapeOptionTriggersEscape() throws Exception {
-        try (JsHost host = new JsHost()) {
+        try (JsHost host = new GraalJsHost()) {
             JsCtxBridge bridge = new JsCtxBridge(host, null);
             Value fn = host.eval(
                 "(ctx) => { ctx.command('echo <message:text>').option('escape', '-e', { value: false })" +

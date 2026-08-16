@@ -15,7 +15,7 @@ class CrossLanguageSpikeTest {
     @Test
     void javaProvidesJsCallsAndEmitsBack() throws Exception {
         Context root = new Context();
-        try (JsHost host = new JsHost()) {
+        try (JsHost host = new GraalJsHost()) {
             root.provide("counter", new Counter());
 
             AtomicReference<String> done = new AtomicReference<>();

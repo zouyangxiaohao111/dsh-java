@@ -9,7 +9,7 @@ class JsCtxBridgeTest {
     @Test
     void jsPluginEmitsBackToJava() throws Exception {
         Context root = new Context();
-        try (JsHost host = new JsHost()) {
+        try (JsHost host = new GraalJsHost()) {
             AtomicReference<String> got = new AtomicReference<>();
             root.on("done", (c, args) -> { got.set(String.valueOf(args[0])); return null; });
 

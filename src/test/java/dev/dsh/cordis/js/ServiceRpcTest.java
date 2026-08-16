@@ -14,7 +14,7 @@ class ServiceRpcTest {
     @Test
     void jsCallsJavaServiceViaProxy() throws Exception {
         Context root = new Context();
-        try (JsHost host = new JsHost()) {
+        try (JsHost host = new GraalJsHost()) {
             root.provide("greeter", new Greeter());
             AtomicInteger got = new AtomicInteger();
             root.on("result", (c, args) -> { got.set(Integer.parseInt(String.valueOf(args[0]))); return null; });

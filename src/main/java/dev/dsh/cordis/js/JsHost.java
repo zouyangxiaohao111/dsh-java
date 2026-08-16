@@ -1,55 +1,13 @@
 package dev.dsh.cordis.js;
 
-import org.graalvm.polyglot.Context;
-import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.Value;
-
 import java.nio.file.Path;
 
-/** Manages the shared GraalJS context for JS plugins (design §3.2). */
-public final class JsHost implements AutoCloseable {
-    private final Context context;
-
-    public JsHost() {
-        this.context = Context.newBuilder("js")
-                // M2 可信插件假设:允许 JS 调用 Java 服务公共成员,跨语言服务无需每类 @HostAccess.Export 注解
-                .allowHostAccess(HostAccess.ALL)
-                .allowExperimentalOptions(true)
-                .allowIO(true)
-                .option("js.commonjs-require", "true")
-                .build();
-    }
-
-    public JsHost(Path requireCwd) {
-        this.context = Context.newBuilder("js")
-                // M2 可信插件假设:允许 JS 调用 Java 服务公共成员,跨语言服务无需每类 @HostAccess.Export 注解
-                .allowHostAccess(HostAccess.ALL)
-                .allowExperimentalOptions(true)
-                .allowIO(true)
-                .option("js.commonjs-require", "true")
-                .option("js.commonjs-require-cwd", requireCwd.toAbsolutePath().toString())
-                .build();
-    }
-
-    /** Evaluate a JS expression and return the resulting value. */
-    public Value eval(String script) {
-        return context.eval("js", script);
-    }
-
-    /** Load a CommonJS module by specifier relative to the require cwd. */
-    public Value require(String specifier) {
-        return context.eval("js", "require(" + quoted(specifier) + ")");
-    }
-
-    /** Load a CommonJS module file by absolute path. */
-    public Value loadModule(Path file) {
-        return context.eval("js", "require(" + quoted(file.toAbsolutePath().toString()) + ")");
-    }
-
-    public Context graalContext() { return context; }
-
-    @Override
-    public void close() { context.close(); }
-
-    private static String quoted(String s) { return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""; }
+/** JS 插件运行时抽象(M2 深化 §3.5)。GraalJS 实现 + 未来 Node worker 实现。 */
+public interface JsHost extends AutoCloseable {
+    Value eval(String script);
+    Value require(String specifier);
+    Value loadModule(Path file);
+    org.graalvm.polyglot.Context graalContext();   // 桥互操作入口(GraalJS 专属)
+    @Override void close();
 }

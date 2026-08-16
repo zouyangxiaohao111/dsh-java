@@ -22,7 +22,7 @@ class EchoPluginTest {
     @Test
     void loadRealKoishiPluginAndTrigger() throws Exception {
         Context root = new Context();
-        try (JsHost host = new JsHost(echoNodeModules())) {
+        try (JsHost host = new GraalJsHost(echoNodeModules())) {
             // 加载 echo(对象-with-apply,经 require 解析到真实 lib/index.js)
             Value echo = host.loadModule(echoLib());
             root.plugin(new JsPluginAdapter(host, echo), null);
