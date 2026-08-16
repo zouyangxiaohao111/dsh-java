@@ -20,19 +20,28 @@ public final class PluginReloader {
         this.outputDir = outputDir;
     }
 
-    /** 重载一个 Java 插件:源码 → 编译 → 新 CL 实例化 → registry.delete(旧) + registry.plugin(新)。 */
+    /** 重载一个 Java 插件:源码 → 编译 → 新 CL 实例化 → registry.delete(旧) + registry.plugin(新)。
+     *  回滚:先编译/加载新实现,成功才删旧;编译/加载/注册任一失败都保留旧实现。 */
     @SuppressWarnings("unchecked")
     public <T> Plugin<T> reload(Path sourceFile, Plugin<?> oldPlugin, Object config) throws Exception {
         Path classesDir = compiler.compile(sourceFile, outputDir.resolve(sourceFile.getFileName().toString() + ".classes"));
         ClassLoader cl = loaderFactory.create(List.of(classesDir), getClass().getClassLoader());
         String className = pluginClassName(sourceFile);
-        Class<?> cls = cl.loadClass(className);
-        if (!Plugin.class.isAssignableFrom(cls)) {
-            throw new IllegalStateException(className + " does not implement Plugin");
+        Class<?> cls;
+        try {
+            cls = cl.loadClass(className);
+        } catch (Exception e) {
+            throw new IllegalStateException("plugin load failed, keeping old: " + className, e);
         }
+        if (!Plugin.class.isAssignableFrom(cls)) throw new IllegalStateException("not a plugin: " + className);
         Plugin<Object> newPlugin = (Plugin<Object>) cls.getDeclaredConstructor().newInstance();
         if (oldPlugin != null) ctx.registry.delete(oldPlugin);
-        ctx.registry.plugin(ctx, newPlugin, config);
+        try {
+            ctx.registry.plugin(ctx, newPlugin, config);
+        } catch (Exception e) {
+            if (oldPlugin != null) ctx.registry.plugin(ctx, oldPlugin, config);
+            throw e;
+        }
         return (Plugin<T>) newPlugin;
     }
 
