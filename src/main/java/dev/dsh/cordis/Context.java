@@ -107,8 +107,13 @@ public final class Context {
         return this.reflect.get(this, name, false);
     }
 
-    /** Overwrite a provided service's value. */
+    /** Overwrite a provided service's value; computed accessors route to their setter. */
     public void set(String name, Object value) {
+        Reflect.Property prop = this.reflect.props.get(name);
+        if (prop instanceof Reflect.Property.Accessor acc) {
+            if (acc.set != null) acc.set.apply(this, value);
+            return;
+        }
         this.reflect.set(this, name, value);
     }
 
@@ -153,6 +158,28 @@ public final class Context {
 
     public Object waterfall(String name, Object... args) {
         return this.events.waterfall(name, args);
+    }
+
+    /** Waterfall with an explicit dispatching context (used by core internal hooks). */
+    public Object waterfall(Context thisArg, String name, Object... args) {
+        return this.events.waterfall(thisArg, name, args);
+    }
+
+    // ---- computed properties (reflect.ts:345-390) ----
+
+    /** Define a computed context property backed by get/set hooks (reflect.ts:345-353). */
+    public Disposable accessor(String name, Reflect.Property.Accessor options) {
+        return this.reflect.accessor(name, options);
+    }
+
+    /** Expose selected members of a service directly on ctx (reflect.ts:364-390). */
+    public Disposable mixin(String source, List<String> keys) {
+        return this.reflect.mixin(source, keys);
+    }
+
+    /** Expose renamed members of a service: source-key → ctx-key map (reflect.ts:364-390). */
+    public Disposable mixin(String source, Map<String, String> renamed) {
+        return this.reflect.mixin(source, renamed);
     }
 
     // ---- registry (mixins made static) ----

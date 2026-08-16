@@ -64,6 +64,15 @@ public final class Registry {
         // 级联:父 fiber 卸载时 dispose 本插件 fiber(fiber.ts:265)
         caller.fiber.effect(() -> (Disposable) () -> fiber.dispose(), "ctx.plugin()");
 
+        // Publish only after the parent owns a fully assigned disposer (fiber.ts:299-303);
+        // a synchronous observer may dispose this fiber, so rethrow on failure after cleanup.
+        try {
+            fiber.context.emit("internal/plugin", fiber);
+        } catch (Throwable t) {
+            fiber.dispose();
+            throw t;
+        }
+
         // publication + dependency resolution (fiber.ts:299-319)
         if (fiber.uid != 0 && caller.fiber.state != FiberState.UNLOADING) {
             for (String name : injectMap.keySet()) {

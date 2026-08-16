@@ -21,6 +21,21 @@ public final class DisposableList<T> implements Iterable<T> {
         };
     }
 
+    /** Prepend and return a remover that deletes this entry (JS `unshift`). */
+    public Runnable unshift(T value) {
+        long id = ++sn;
+        Map<Long, T> rebuilt = new LinkedHashMap<>();
+        rebuilt.put(id, value);
+        rebuilt.putAll(map);
+        map.clear();
+        map.putAll(rebuilt);
+        index.put(value, id);
+        return () -> {
+            map.remove(id);
+            index.remove(value, id); // 只在该 id 仍映射此值时清除
+        };
+    }
+
     public boolean delete(T value) {
         Long id = index.remove(value);
         if (id == null) return false;

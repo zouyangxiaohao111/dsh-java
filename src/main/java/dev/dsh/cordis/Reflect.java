@@ -2,6 +2,11 @@ package dev.dsh.cordis;
 
 import dev.dsh.cordis.util.Disposable;
 
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.*;
 import java.util.function.Predicate;
 
@@ -114,7 +119,13 @@ public final class Reflect {
                 fiber.refresh();
             }
         }
-        // internal/service event 推迟到 Events 就绪(任务 10 回填)
+        // reflect.ts:330-334 — report each binding on a filter-scoped child context
+        for (String name : names) {
+            Context self = this.ctx.extend();
+            self.filter = target -> isolateMatches(target, name);
+            Impl impl = getImpl(this.ctx, name, false);
+            this.ctx.events.emit(self, "internal/service", name, impl == null ? null : impl.value);
+        }
     }
 
     private boolean isolateMatches(Context fiberCtx, String name) {
@@ -130,8 +141,117 @@ public final class Reflect {
         }, "ctx.accessor(" + name + ")");
     }
 
-    /** Expose selected members of a service directly on ctx (reflect.ts:364-390). */
+    /** Expose selected members of a service directly on ctx (reflect.ts:364-390).
+     *  Data members are forwarded through accessor get/set; method members are
+     *  returned bound to the source service (Java {@link MethodHandle}, else the
+     *  raw {@link Method}), mirroring JS `value.bind(mixin)`. */
     public Disposable mixin(String source, List<String> keys) {
-        return this.ctx.fiber.effect(() -> Disposable.none(), "ctx.mixin(" + source + ")");
+        List<String[]> entries = new ArrayList<>();
+        for (String key : keys) entries.add(new String[]{key, key});
+        return mixinEntries(source, entries);
+    }
+
+    /** Expose renamed members of a service: source-key → ctx-key map (reflect.ts:364-390). */
+    public Disposable mixin(String source, Map<String, String> renamed) {
+        List<String[]> entries = new ArrayList<>();
+        for (Map.Entry<String, String> e : renamed.entrySet()) entries.add(new String[]{e.getKey(), e.getValue()});
+        return mixinEntries(source, entries);
+    }
+
+    /** Shared mixin body over (member-key, ctx-key) pairs (reflect.ts:371-389). */
+    private Disposable mixinEntries(String source, List<String[]> entries) {
+        return this.ctx.fiber.effect(() -> {
+            List<Disposable> disposers = new ArrayList<>();
+            for (String[] pair : entries) {
+                disposers.add(accessor(pair[1], mixinAccessor(source, pair[0])));
+            }
+            return Disposable.of(() -> {
+                for (int i = disposers.size() - 1; i >= 0; i--) disposers.get(i).dispose();
+            });
+        }, "ctx.mixin(" + source + ")");
+    }
+
+    /** Accessor forwarding one `key` of a service named `source` (reflect.ts:373-388). */
+    private Property.Accessor mixinAccessor(String source, String key) {
+        return new Property.Accessor(
+                (ctx, receiver) -> {
+                    Object service = ctx.get(source);
+                    if (service == null) return null;
+                    return readMember(service, key);
+                },
+                (ctx, value) -> {
+                    Object service = ctx.get(source);
+                    if (service == null) return false;
+                    return writeMember(service, key, value);
+                }
+        );
+    }
+
+    /** Read a member from a service object: map key, bound public method, or public field. */
+    static Object readMember(Object service, String key) {
+        if (service instanceof Map<?, ?> m) return m.get(key);
+        Method method = findPublicMethod(service.getClass(), key);
+        if (method != null) return bindMethod(service, method);
+        Field field = findPublicField(service.getClass(), key);
+        if (field == null) return null;
+        try {
+            return field.get(service);
+        } catch (IllegalAccessException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** Write a member on a service object: map key or public field. Returns false if unsupported. */
+    static boolean writeMember(Object service, String key, Object value) {
+        if (service instanceof Map<?, ?> m) {
+            @SuppressWarnings("unchecked")
+            Map<Object, Object> target = (Map<Object, Object>) m;
+            target.put(key, value);
+            return true;
+        }
+        Field field = findPublicField(service.getClass(), key);
+        if (field == null) return false;
+        try {
+            field.set(service, value);
+            return true;
+        } catch (IllegalAccessException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** First public instance method with the given name (any arity), or null. */
+    private static Method findPublicMethod(Class<?> cls, String key) {
+        for (Class<?> c = cls; c != null; c = c.getSuperclass()) {
+            for (Method m : c.getDeclaredMethods()) {
+                if (m.getName().equals(key)
+                        && Modifier.isPublic(m.getModifiers())
+                        && !Modifier.isStatic(m.getModifiers())) {
+                    return m;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** First public instance field with the given name, or null. */
+    private static Field findPublicField(Class<?> cls, String key) {
+        for (Class<?> c = cls; c != null; c = c.getSuperclass()) {
+            try {
+                Field f = c.getDeclaredField(key);
+                if (Modifier.isPublic(f.getModifiers()) && !Modifier.isStatic(f.getModifiers())) return f;
+            } catch (NoSuchFieldException ignored) {
+            }
+        }
+        return null;
+    }
+
+    /** Bind a public method to its service instance (JS `value.bind(service)` equivalent).
+     *  Falls back to the raw {@link Method} when a bound handle is not obtainable. */
+    private static Object bindMethod(Object service, Method method) {
+        try {
+            return MethodHandles.lookup().unreflect(method).bindTo(service);
+        } catch (IllegalAccessException e) {
+            return method;
+        }
     }
 }

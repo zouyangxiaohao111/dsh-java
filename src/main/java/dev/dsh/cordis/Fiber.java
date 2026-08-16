@@ -15,6 +15,8 @@ public final class Fiber {
     public final int uid;
     /** The context this fiber's plugin runs in. */
     public final Context ctx;
+    /** Same as {@link #ctx}; the fiber.ts `context` alias used by core hooks. */
+    public final Context context;
     /** The context the plugin was loaded from. */
     public final Context parent;
     /** Validated plugin config (updated by update()). */
@@ -32,6 +34,8 @@ public final class Fiber {
     /** In-flight load/unload transition. */
     public CompletableFuture<Void> inertia;
 
+    /** Per-fiber listeners for the `internal/update` waterfall (fiber.ts:202). */
+    public final Map<String, DisposableList<Events.Listener>> _hooks = new HashMap<>();
     final DisposableList<Disposable> _disposables = new DisposableList<>();
 
     Throwable _error;
@@ -45,6 +49,7 @@ public final class Fiber {
         this.runtime = runtime;
         this.uid = runtime == null ? 0 : parent.registry.counter();
         this.ctx = runtime == null ? parent : parent.extend();
+        this.context = this.ctx;
         this.ctx.fiber = this;   // rebind: plugin context's fiber is this fiber (fiber.ts:236)
 
         if (runtime != null) {
@@ -57,6 +62,16 @@ public final class Fiber {
             this.store = new HashMap<>();
         }
         // publication & dep resolution completed in Registry.plugin (task 9)
+    }
+
+    /** Set the lifecycle state and emit `internal/status` on any change (fiber.ts:587-595).
+     *  During root-context construction the events bus is not yet wired, so the
+     *  emission is skipped there. */
+    private void setState(FiberState newState) {
+        FiberState oldState = this.state;
+        if (oldState == newState) return;
+        this.state = newState;
+        if (this.ctx.events != null) this.context.emit("internal/status", this, oldState);
     }
 
     /** The plugin's display name, nearest named ancestor, else "root" (fiber.ts:336-343). */
@@ -160,10 +175,10 @@ public final class Fiber {
         this.epoch = newEpoch;
         if (this.inertia != null) return;
         if (!Objects.equals(newEpoch, INACTIVE) && Objects.equals(oldEpoch, INACTIVE)) {
-            this.state = FiberState.LOADING;
+            setState(FiberState.LOADING);
             this.reload();   // reload() 自己管理 this.inertia
         } else {
-            this.state = FiberState.UNLOADING;
+            setState(FiberState.UNLOADING);
             this.unload();   // unload() 自己管理 this.inertia
         }
     }
@@ -186,7 +201,7 @@ public final class Fiber {
             this.epoch = INACTIVE;
         }
         if (Objects.equals(this.epoch, oldEpoch)) {
-            this.state = FiberState.ACTIVE;
+            setState(FiberState.ACTIVE);
             this.inertia = null;
             // fiber.ts:_updateState — notify dependents of services this fiber provides
             if (this.store != null) {
@@ -197,7 +212,7 @@ public final class Fiber {
                 if (!provided.isEmpty()) this.ctx.reflect.notify(provided);
             }
         } else {
-            this.state = FiberState.UNLOADING;
+            setState(FiberState.UNLOADING);
             this.unload();   // unload() 自己管理 this.inertia
         }
         return this.inertia;
@@ -216,10 +231,10 @@ public final class Fiber {
             if (Objects.equals(this.epoch, INACTIVE)) {
                 this.inertia = null;
                 // fiber.ts:_getState — no pending reload: FAILED if errored, else PENDING
-                this.state = this._error != null ? FiberState.FAILED : FiberState.PENDING;
+                setState(this._error != null ? FiberState.FAILED : FiberState.PENDING);
                 return CompletableFuture.completedFuture(null);
             } else {
-                this.state = FiberState.LOADING;
+                setState(FiberState.LOADING);
                 this.reload();   // reload() 自己管理 this.inertia
                 return this.inertia != null ? this.inertia : CompletableFuture.completedFuture(null);
             }
@@ -235,13 +250,16 @@ public final class Fiber {
         }
     }
 
-    /** Validate config against the runtime's Config validator (fiber.ts:50-62, 641-644). */
+    /** Resolve raw config through the `internal/config` waterfall, then validate
+     *  against the runtime's Config validator (fiber.ts:50-62, 641-644). */
     Object resolveConfig(Object rawConfig) {
-        if (runtime == null || runtime.config() == null) return rawConfig;
-        if (rawConfig instanceof JsonNode node) {
+        Object config = this.context.waterfall(this.ctx, "internal/config", rawConfig,
+                (Events.Listener) (ctx, args) -> rawConfig);
+        if (runtime == null || runtime.config() == null) return config;
+        if (config instanceof JsonNode node) {
             return runtime.config().validate(node);
         }
-        return rawConfig;
+        return config;
     }
 
     /** Wait for lifecycle work and rethrow startup errors (fiber.ts:704-710). */
@@ -267,8 +285,9 @@ public final class Fiber {
         return awaitInternal().thenApply(v -> null);
     }
 
-    /** Validate and apply new config, then restart (fiber.ts:736-753). Simplified:
-     *  no internal/update waterfall (deferred). */
+    /** Validate and apply new config, then restart through the `internal/update`
+     *  waterfall (fiber.ts:736-753); update hooks may veto the restart by not
+     *  calling `next`. */
     public CompletableFuture<Void> update(Object config, boolean noSave) {
         assertActive();
         this._config = config;
@@ -278,9 +297,20 @@ public final class Fiber {
             this.refresh();
             return CompletableFuture.completedFuture(null);
         }
-        this.config = resolveConfig(config);
-        this._error = null;
-        return restart();
+        config = resolveConfig(config);
+        final Object resolved = config;
+        Object result = this.context.waterfall(this.ctx, "internal/update", resolved, noSave,
+                (Events.Listener) (ctx, args) -> {
+                    this.config = resolved;
+                    this._error = null;
+                    return restart();
+                });
+        if (result instanceof CompletableFuture<?> cf) {
+            @SuppressWarnings("unchecked")
+            CompletableFuture<Void> future = (CompletableFuture<Void>) cf;
+            return future;
+        }
+        return CompletableFuture.completedFuture(null);   // vetoed — restart skipped
     }
 
     /** Dispose this fiber: unload, then settle once cleanup finished. */
@@ -289,7 +319,7 @@ public final class Fiber {
         this.epoch = INACTIVE;   // unload 不得重载 ACTIVE fiber
         CompletableFuture<Void> done = unload();
         return done.thenAccept(v -> {
-            this.state = FiberState.DISPOSED;
+            setState(FiberState.DISPOSED);
             this._error = null;
             if (this.runtime != null) {
                 this.runtime.fibers.delete(this);   // 除名,防止 notify 复活(fiber.ts:266-275)
