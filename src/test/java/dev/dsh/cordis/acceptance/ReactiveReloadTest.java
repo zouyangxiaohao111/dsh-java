@@ -22,9 +22,10 @@ class ReactiveReloadTest {
 
         Fiber consumer = root.plugin(PluginSpec.<Void>of((ctx, cfg) -> {
             loads.incrementAndGet();
-            // Java 移植:PluginApply 返回 void(cordis _execute 会 collect 回调返回的 Disposable,
-            // 但 Java 化 API 用 ctx.effect 表达同一清理语义)。保留全部 reactive-reload 断言。
+            // Java 移植:PluginApply 返回 Object(异步 apply 可返回 CompletableFuture);清理语义用
+            // ctx.effect 表达(cordis _execute 会 collect 回调返回的 Disposable)。保留全部 reactive-reload 断言。
             ctx.effect(() -> Disposable.of(unloads::incrementAndGet), "unload-counter");
+            return null;
         }).inject("svc"), null);
         consumer.await().join();
         assertThat(loads.get()).isEqualTo(1);

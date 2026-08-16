@@ -175,7 +175,10 @@ public final class Fiber {
         String oldEpoch = this.epoch;
         try {
             this.config = resolveConfig(this._config);
-            ((Plugin<Object>) this.runtime.callback).apply(this.ctx, this.config);
+            Object result = ((Plugin<Object>) this.runtime.callback).apply(this.ctx, this.config);
+            if (result instanceof CompletableFuture<?> cf) {
+                ((CompletableFuture<Void>) cf).join();   // 等待异步 apply 完成(同步模型下 join 务实)
+            }
             this._error = null;
         } catch (Throwable t) {
             this.ctx.logger().error(t);

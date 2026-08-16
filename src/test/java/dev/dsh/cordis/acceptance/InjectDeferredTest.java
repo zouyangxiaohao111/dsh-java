@@ -11,7 +11,7 @@ class InjectDeferredTest {
         Context root = new Context();
         AtomicBoolean activated = new AtomicBoolean(false);
 
-        Fiber greeter = root.plugin(PluginSpec.<Void>of((ctx, cfg) -> activated.set(true)).inject("svc"), null);
+        Fiber greeter = root.plugin(PluginSpec.<Void>of((ctx, cfg) -> { activated.set(true); return null; }).inject("svc"), null);
         assertThat(greeter.state).isEqualTo(FiberState.PENDING);
 
         root.provide("svc", new Object());

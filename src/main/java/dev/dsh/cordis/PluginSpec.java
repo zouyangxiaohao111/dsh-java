@@ -13,7 +13,7 @@ public final class PluginSpec<T> implements Plugin<T> {
 
     @FunctionalInterface
     public interface PluginApply<T> {
-        void apply(Context ctx, T config) throws Exception;
+        Object apply(Context ctx, T config) throws Exception;
     }
 
     private PluginSpec(PluginApply<T> apply) { this.entrypoint = apply; }
@@ -30,7 +30,7 @@ public final class PluginSpec<T> implements Plugin<T> {
     @Override public String[] inject() { return inject.toArray(String[]::new); }
     @Override public String[] provide() { return provide.toArray(String[]::new); }
     @Override public ConfigValidator<T> config() { return config; }
-    @Override public void apply(Context ctx, T config) throws Exception { entrypoint.apply(ctx, config); }
+    @Override public Object apply(Context ctx, T config) throws Exception { return entrypoint.apply(ctx, config); }
     @Override public Map<String, Object> injectConfig() {
         return Collections.unmodifiableMap(injectConfig);
     }

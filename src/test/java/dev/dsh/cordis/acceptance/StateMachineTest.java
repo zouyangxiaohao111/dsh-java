@@ -23,6 +23,7 @@ class StateMachineTest {
         AtomicInteger attempts = new AtomicInteger();
         Fiber f = root.plugin(PluginSpec.<Void>of((ctx, cfg) -> {
             if (attempts.incrementAndGet() == 1) throw new RuntimeException("boom");
+            return null;
         }), null);
         Throwable t = catchThrowable(() -> f.await().join());
         assertThat(f.state).isEqualTo(FiberState.FAILED);
@@ -38,7 +39,7 @@ class StateMachineTest {
     @Test
     void activeThenDisposed() throws Exception {
         Context root = new Context();
-        Fiber f = root.plugin(PluginSpec.<Void>of((ctx, cfg) -> {}), null);
+        Fiber f = root.plugin(PluginSpec.<Void>of((ctx, cfg) -> { return null; }), null);
         f.await().join();
         assertThat(f.state).isEqualTo(FiberState.ACTIVE);
         f.dispose().join();

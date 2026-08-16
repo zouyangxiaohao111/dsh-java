@@ -7,7 +7,8 @@ import java.util.Map;
 /** Plugin entrypoint (registry.ts:92-146).
  *  Call `apply(ctx, config)` when all declared deps are available. */
 public interface Plugin<T> {
-    void apply(Context ctx, T config) throws Exception;
+    /** Apply the plugin. May return a CompletableFuture to be awaited before activation. */
+    Object apply(Context ctx, T config) throws Exception;
 
     /** Display name for fiber diagnostics and loggers. */
     default String name() { return null; }

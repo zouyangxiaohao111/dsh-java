@@ -28,7 +28,7 @@ public final class JsPluginAdapter implements Plugin<Object> {
     @Override public String[] provide() { return provide; }
 
     @Override
-    public void apply(Context ctx, Object config) {
+    public Object apply(Context ctx, Object config) {
         JsCtxBridge bridge = new JsCtxBridge(host, ctx);
         Value jsCtx = bridge.ctxShim();
         Value applyFn = resolveApply();
@@ -41,6 +41,9 @@ public final class JsPluginAdapter implements Plugin<Object> {
                 return CompletableFuture.completedFuture(null);
             }, "js-plugin-disposer");
         }
+        // JS 插件返回 Promise(GraalJS Value)时非可执行函数 → 返回它;Fiber.reload 只 await 真
+        // CompletableFuture,GraalJS Value 不匹配 → JS async apply 暂不 await(TODO: JS Promise 完整桥接)。
+        return result instanceof Value v && v.canExecute() ? null : result;
     }
 
     private Value resolveApply() {

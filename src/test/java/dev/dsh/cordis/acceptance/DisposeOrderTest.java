@@ -16,6 +16,7 @@ class DisposeOrderTest {
             ctx.effect(() -> Disposable.of(() -> order.add("a")), "a");
             ctx.effect(() -> Disposable.of(() -> order.add("b")), "b");
             ctx.effect(() -> Disposable.of(() -> order.add("c")), "c");
+            return null;
         }), null);
         f.await().join();
         f.dispose().join();
