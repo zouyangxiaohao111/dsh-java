@@ -108,7 +108,9 @@ public final class JsCtxBridge {
 
     @HostAccess.Export
     public Object get(String name) {
-        return ctx.get(name);
+        Object svc = ctx.get(name);
+        if (svc != null && !(svc instanceof Value)) return new ServiceProxy(host.graalContext()).expose(svc);
+        return svc;
     }
 
     @HostAccess.Export
