@@ -8,7 +8,7 @@
 
 <h1 align="center">dsh-java</h1>
 
-<h3 align="center">一套机制、两套运行时 —— 融合 Java 生态与 dsh 庞大生态的 Cordis 插件框架</h3>
+<h3 align="center">一套机制、两套运行时 —— 融合 Java 生态与 dsh 庞大生态的企业级 Cordis 插件框架</h3>
 
 <p align="center"><sub>中文 · English</sub></p>
 
