@@ -5,6 +5,7 @@ import dev.dsh.cordis.Events;
 import dev.dsh.cordis.util.Disposable;
 import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.Value;
+import org.graalvm.polyglot.proxy.ProxyExecutable;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -54,8 +55,21 @@ public final class JsCtxBridge {
     public Object on(String name, Value listener, Map<String, Object> opts) {
         boolean prepend = Boolean.TRUE.equals(opts.get("prepend"));
         boolean global = Boolean.TRUE.equals(opts.get("global"));
-        Events.Listener l = (c, args) -> listener.execute(args);
-        return ctx.on(name, l, new Events.EventOptions().prepend(prepend).global(global));
+        // self 用于 next 续延定位当前监听器在同一事件注册序中的位置(不能直接引用 lambda 自身)
+        Events.Listener[] self = new Events.Listener[1];
+        self[0] = (c, args) -> {
+            Object[] callArgs = args;
+            // JS listener 若声明的形参数比 dispatch 实参多 1,则期望一个 next 续延(cordis 拦截语义):
+            // 调 next(newArgs) 委派到同一事件后续注册的监听器(含 Java 监听器),不重头 emit。
+            if (declaresNext(listener, args)) {
+                callArgs = new Object[args.length + 1];
+                System.arraycopy(args, 0, callArgs, 0, args.length);
+                callArgs[args.length] = (ProxyExecutable) nextArgs ->
+                        dispatchNext(name, self[0], c, nextArgs);
+            }
+            return listener.execute(callArgs);
+        };
+        return ctx.on(name, self[0], new Events.EventOptions().prepend(prepend).global(global));
     }
 
     @HostAccess.Export
@@ -64,6 +78,26 @@ public final class JsCtxBridge {
         boolean global = Boolean.TRUE.equals(opts.get("global"));
         Events.Listener l = (c, args) -> listener.execute(args);
         return ctx.once(name, l, new Events.EventOptions().prepend(prepend).global(global));
+    }
+
+    /** JS listener 声明的形参数 == dispatch 实参 + 1 时,判定其期望一个 next 续延。 */
+    private static boolean declaresNext(Value listener, Object[] args) {
+        if (listener == null || !listener.canExecute()) return false;
+        Value length = listener.getMember("length");
+        if (length == null || !length.isNumber() || !length.fitsInInt()) return false;
+        return length.asInt() == args.length + 1;
+    }
+
+    /** next 续延:按同一事件的注册序,直接调用当前监听器之后的那个监听器(不重头 emit)。
+     *  该监听器若是 JS 且自身也声明 next,则链可继续;否则链到此为止(与 cordis waterfall 一致)。 */
+    private Object dispatchNext(String name, Events.Listener current, Context c, Object[] nextArgs) {
+        List<Events.Listener> listeners = ctx.events.listenersFor(name, c);
+        int idx = -1;
+        for (int i = 0; i < listeners.size(); i++) {
+            if (listeners.get(i) == current) { idx = i; break; }
+        }
+        if (idx < 0 || idx + 1 >= listeners.size()) return null;
+        return listeners.get(idx + 1).call(c, nextArgs);
     }
 
     @HostAccess.Export

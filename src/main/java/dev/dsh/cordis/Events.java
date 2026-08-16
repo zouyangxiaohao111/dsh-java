@@ -122,6 +122,22 @@ public final class Events {
         return next.get();
     }
 
+    /** Ordered listener callbacks for one event as currently registered — a read-only
+     *  snapshot in dispatch order, after the same context filtering {@link #dispatch}
+     *  applies. Lets the JS bridge implement `next` continuations that delegate to the
+     *  following listener (Java or JS) without re-entering dispatch. */
+    public List<Listener> listenersFor(String name, Context thisArg) {
+        List<Hook> list = hooks.get(name);
+        if (list == null) return List.of();
+        List<Listener> out = new ArrayList<>(list.size());
+        for (Hook hook : list) {
+            if (hook.global() || thisArg == null || thisArg.filter == null || thisArg.filter.test(hook.ctx)) {
+                out.add(hook.callback());
+            }
+        }
+        return out;
+    }
+
     /** Register a listener owned by the calling fiber (events.ts:254-302). */
     public Disposable on(Context caller, String name, Listener listener, EventOptions opts) {
         if (opts == null) opts = new EventOptions();
