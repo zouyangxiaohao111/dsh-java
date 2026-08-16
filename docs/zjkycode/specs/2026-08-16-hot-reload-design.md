@@ -20,6 +20,8 @@ WatchService(监听插件源/class 目录)
    → 失败回滚:旧 ClassLoader 保留,新注册失败则恢复旧
 ```
 
+**CL 选择(2026-08-16 决策)**:用 `URLClassLoader`-per-plugin(非 JPMS ModuleLayer)。理由:module-info 仪式在早期迭代是负担;两者隔离原理相同(共享接口在父 CL),ModuleLayer 可后续迁。**留 seam**:`PluginClassLoaderFactory` 接口(默认 `UrlPluginClassLoaderFactory`),M4 生态成型可换 `ModuleLayer` 实现,核心与 PluginReloader 不改。
+
 - **共享接口放父 CL**:`Plugin`/`Context`/`Service` 等由核心 ClassLoader 加载,插件 .class 由每插件子 CL 加载,避免类身份冲突。
 - **源码级重载**:用 `javax.tools.JavaCompiler` 把 `.java` 编译为 `.class` 到临时目录,再新 CL 加载(设计默认源码级,因 harness 以源码为准)。
 - **文件监听**:`java.nio.file.WatchService`(非递归需手动走树,或用简单轮询)。
