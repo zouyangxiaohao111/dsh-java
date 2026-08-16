@@ -69,3 +69,11 @@ WatchService(监听 JS 插件文件)
 ## 5. 与 M1 响应式重载的关系
 
 M1 的"inject 驱动重载"是**依赖变更→依赖方重载**;M3 是**文件变更→插件自身换实现**。两者正交,M3 复用 M1 的 fiber dispose/reload 机制做换血。
+
+## 6. M4 前瞻:动态宿主分辨(2026-08-16 用户决策)
+
+`JsHost` seam 之上加 `JsHostFactory`(按插件动态选 GraalJS 或 Node worker):
+
+- **静态检测**(加载前,可缓存):扫依赖树找 `.node`/`binding.gyp`(native→Node worker)、package.json `type:module` 且无 CJS(ESM→Node worker)、源码 `require('node:stream'/'child_process'/'crypto')`(重 Node→建议 Node worker)。
+- **运行时兜底**(正确性根基):GraalJS 试跑 → `PolyglotException` 缺模块/缺 Node API → dispose 旧 fiber → 换 Node worker 重注册重跑。
+- 每插件独立选宿主;`JsHostFactory` 是唯一入口。前提:Node worker 实现落地(JSON-RPC 桥 + 进程管理)。
