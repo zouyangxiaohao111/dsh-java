@@ -3,3 +3,6 @@ build/
 .idea/
 *.iml
 out/
+# dsh-plugin spike 的真实 npm 依赖(zod 由 npm install 重装;手写 shim 保留提交)
+src/test/resources/dsh-plugin/node_modules/zod/
+src/test/resources/dsh-plugin/node_modules/.package-lock.json

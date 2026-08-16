@@ -1,4 +1,8 @@
 // cordis ctx 契约子集 shim。bridge 为 Java JsCtxBridge 对象。
+// ctx 以 Proxy 包装:未在显式面里声明的字符串属性按 cordis 语义解析为服务
+// (经 bridge.get(name) → Java ctx.get → ServiceProxy),使真实 dsh 插件可
+// 直接读 ctx.sessionProjections 等服务属性。符号属性返回 undefined,避免
+// Symbol.iterator / Symbol.toPrimitive 等内部探针被误路由到 bridge。
 module.exports = function createCtx(bridge) {
   const ctx = {
     on: (name, listener, opts) => bridge.on(name, listener, opts == null ? {} : opts),
@@ -13,7 +17,16 @@ module.exports = function createCtx(bridge) {
     bots: { find: () => null },
   }
   installCommand(ctx, bridge)
-  return ctx
+  return new Proxy(ctx, {
+    get(target, prop, receiver) {
+      if (prop in target) return Reflect.get(target, prop, receiver)
+      if (typeof prop === 'symbol') return undefined
+      return bridge.get(String(prop))
+    },
+    has(target, prop) {
+      return typeof prop === 'symbol' ? Reflect.has(target, prop) : true
+    },
+  })
 }
 
 // ---- 最小 command DSL(任务 5)----
