@@ -64,6 +64,34 @@ module.exports = (bridge, fiberName) => {
 
 listener 归属:M1 的 `Events.on` 已 caller-aware,shim 经 `JsCtxBridge.on` 传 `javaCtx` 为 caller。
 
+**扩展面(探查子代理 2026-08-16 评估,按优先级)**:
+- 高:`ctx.on` 的 next 链语义 + `{prepend, global}` 选项(拦截/顺序类插件依赖);
+- 高:`ctx.command` 最小 DSL(`ctx.command('echo <message:text>').option(...).action(...)`,注册到命令注册表,触发时以 session 调用 action);
+- 高:`require('koishi')` 模块 shim(`Schema.object`、`h.parse/escape`;必要时 `Random`/`Time`/`Context`);
+- 中:`ctx.plugin`(嵌套)、`ctx.logger(name)`、`ctx.i18n.define(locale, dict)`、`ctx.bots.find(pred)` + bot send 桩;
+- 中低:`ctx.setTimeout/interval/debounce/throttle`(基于 effect + JS 定时器)、`ctx.root`/`ctx.fiber`。
+
+### 3.6 真实插件目标(探查子代理选定)
+
+**首选:`@koishijs/plugin-echo` v2.2.5**(npm)
+- 形态:CJS `module.exports = { Config, apply, name, parsePlatform }`(cordis 对象-with-apply 分支直接命中);
+- 依赖:**0 运行时依赖**,仅 peer koishi;
+- ctx API:`ctx.i18n.define`、`ctx.command('echo <message:text>').option(...).action(...)`、`ctx.bots.find`;
+- 模块加载期 `Schema.object({})`、action 内 `h.parse`/`h.escape`。
+
+**本地回退**(若 echo 的 command 面过重):
+- `@deepseek-ai/dsh-repeat-tool-reminder`(函数式,压测 `ctx.on` next/prepend,需 schemastery + dsh-llm 可解析);
+- `@deepseek-ai/dsh-session-stats`(29 行,最小 inject 证明,需 zod + dsh-llm + sessionProjections 服务)。
+
+### 3.7 构建
+
+`build.gradle.kts` 加:
+
+```kotlin
+implementation("org.graalvm.polyglot:polyglot:24.1.1")
+implementation("org.graalvm.polyglot:js:24.1.1")
+```
+
 ### 3.4 JsPluginAdapter implements Plugin<Object>
 
 - `inject()/provide()/name()`:读 JS 插件附加元数据(`module.exports.inject` / `.provide` / `.name`);未附加则空。
@@ -83,20 +111,13 @@ listener 归属:M1 的 `Events.on` 已 caller-aware,shim 经 `JsCtxBridge.on` �
 
 spike 测试(`src/test/java/dev/dsh/cordis/js/`):
 
-1. **跨语言链**:Java 插件 provide `counter` → JS 插件 `inject(['counter'])` 并调用 `counter.next()` → JS `ctx.emit('done', n)` → Java `ctx.on('done')` 收到。
-2. **真实插件**:加载一个真实函数式 cordis/koishi 插件(依赖最少者),Java 触发事件 → JS `ctx.on` 响应。
+1. **跨语言链**:Java 插件 provide `counter` → JS 插件 `inject(['counter'])` 并调用 `counter.next()` → JS `ctx.emit('done', n)` → Java `ctx.on('done')` 收到(统一 registry,同一个 Context)。
+2. **真实 koishi 插件(echo)**:加载 `@koishijs/plugin-echo` v2.2.5 → Java 侧模拟 session 触发 `ctx.command`(如消息 "echo hello")→ echo 的 `action` 返回 "hello" → 捕获 bot 消息(证明 Java 触发 → koishi 插件响应)。需 koishi 模块 shim + command DSL + i18n/bots 桩。
 3. **统一 registry**:全部走 `root.plugin(new JsPluginAdapter(...))`。
 
-## 5. 构建
+> 若 echo 的 command 面过重,回退本地插件(`dsh-repeat-tool-reminder` 或 `dsh-session-stats`),验收 2 改为对应语义(事件 next/prepend 或最小 inject)。
 
-`build.gradle.kts` 加:
-
-```kotlin
-implementation("org.graalvm.polyglot:polyglot:24.1.1")
-implementation("org.graalvm.polyglot:js:24.1.1")
-```
-
-## 6. 风险与对策
+## 5. 风险与对策
 
 | 风险 | 对策 |
 |---|---|
