@@ -14,15 +14,29 @@ import java.util.concurrent.CompletableFuture;
 
 /** Bridges a JS ctx shim to the Java cordis Context (design §3.3). */
 public final class JsCtxBridge {
+    /** 跨 bridge 共享的命令注册表:root Context → 注册表。
+     *  命令在 {@link JsPluginAdapter#apply} 阶段经其内部 bridge 注册;dispatch 时 Java 侧
+     *  常另建 bridge。故注册表按 root Context 共享,使同 root 的任意 bridge 都能派发。
+     *  WeakHashMap:root Context 无引用后条目可回收。访问统一加锁(WeakHashMap 非线程安全)。 */
+    private static final Map<Context, Map<String, CommandEntry>> SHARED_COMMANDS = new java.util.WeakHashMap<>();
+
     private final JsHost host;
     private final Context ctx;
     private Value shim;
-    /** 命令注册表:命令名 → 入口(design §4.2)。 */
-    private final Map<String, CommandEntry> commands = new LinkedHashMap<>();
+    /** 命令注册表:命令名 → 入口(design §4.2)。ctx 为 null 时(纯 DSL 测试)退化为实例私有。 */
+    private final Map<String, CommandEntry> commands;
 
     public JsCtxBridge(JsHost host, Context ctx) {
         this.host = host;
         this.ctx = ctx;
+        this.commands = resolveCommands(ctx);
+    }
+
+    private static Map<String, CommandEntry> resolveCommands(Context ctx) {
+        if (ctx == null) return new LinkedHashMap<>();
+        synchronized (SHARED_COMMANDS) {
+            return SHARED_COMMANDS.computeIfAbsent(ctx.root, k -> new LinkedHashMap<>());
+        }
     }
 
     /** Create (once) and return the JS ctx shim bound to this bridge. */
