@@ -1,0 +1,7 @@
+{
+  "name": "dsh-plugin-esm",
+  "version": "1.0.0",
+  "description": "ESM form of the real @deepseek-ai/dsh plugins (no CJS transform). Fed to the Node worker host directly; GraalJS standalone cannot load ESM package deps without the hand-written CJS shims kept under ../node_modules.",
+  "type": "module",
+  "private": true
+}

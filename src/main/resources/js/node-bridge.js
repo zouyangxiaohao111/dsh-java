@@ -43,13 +43,15 @@ let nextHandle = 1
 // ---- 值序列化(worker → Java)----
 // 函数 → {$kind:'fn',id,length};普通值走 JSON。服务句柄({$kind:'svc',id} 与
 // {$kind:'ctx'/'module'} 标记)是普通 JSON 对象,原样透传回 Java。
-function serializeValue(v) {
+// 实数语义:NaN/±Infinity → null(与 JSON.stringify 一致);循环引用 → 报错
+// (跨桥值必须是树,拒绝栈溢出;真实 dsh 插件的 zod schema 含 maxValue:Infinity)。
+function serializeValue(v, seen) {
   if (v === undefined) return { $kind: 'undefined' }
   if (v === null) return null
   const t = typeof v
   if (t === 'string' || t === 'boolean') return v
   if (t === 'number') {
-    if (!Number.isFinite(v)) throw new Error('non-finite number cannot cross bridge: ' + v)
+    if (!Number.isFinite(v)) return null
     return v
   }
   if (t === 'bigint') return { $kind: 'bigint', value: v.toString() }
@@ -62,9 +64,17 @@ function serializeValue(v) {
     return out
   }
   if (t === 'object') {
-    if (Array.isArray(v)) return v.map(serializeValue)
-    const out = {}
-    for (const k of Object.keys(v)) out[k] = serializeValue(v[k])
+    const active = seen || new WeakSet()
+    if (active.has(v)) throw new Error('cannot serialize cyclic value across bridge')
+    active.add(v)
+    let out
+    if (Array.isArray(v)) {
+      out = v.map(x => serializeValue(x, active))
+    } else {
+      out = {}
+      for (const k of Object.keys(v)) out[k] = serializeValue(v[k], active)
+    }
+    active.delete(v)
     return out
   }
   throw new Error('cannot serialize value across bridge: ' + t)
@@ -101,7 +111,7 @@ function deserializeValue(v) {
 // Promise 把服务对象误当 thenable 吸收。
 function makeServiceProxy(handle) {
   const invoke = (method, args) =>
-    bridgeCall('invokeService', { handle, method, args: args.map(serializeValue) })
+    bridgeCall('invokeService', { handle, method, args: args.map(x => serializeValue(x)) })
   const callable = (...args) => invoke('$call', args)
   return new Proxy(callable, {
     get(target, prop, receiver) {
@@ -141,10 +151,10 @@ function makeCtx(ctxId) {
   const ctx = {
     on: (name, listener, opts) => bridgeCall('ctxCall', { ctx: ctxId, method: 'on', args: [serializeValue(listener), name, opts || {}] }),
     once: (name, listener, opts) => bridgeCall('ctxCall', { ctx: ctxId, method: 'once', args: [serializeValue(listener), name, opts || {}] }),
-    emit: (name, ...args) => bridgeCall('ctxCall', { ctx: ctxId, method: 'emit', args: [name, args.map(serializeValue)] }),
+    emit: (name, ...args) => bridgeCall('ctxCall', { ctx: ctxId, method: 'emit', args: [name, args.map(x => serializeValue(x))] }),
     provide: (name, value) => bridgeCall('ctxCall', { ctx: ctxId, method: 'provide', args: [name, serializeValue(value)] }),
     get: (name) => bridgeCall('ctxCall', { ctx: ctxId, method: 'get', args: [name] }),
-    inject: (deps, cb) => bridgeCall('ctxCall', { ctx: ctxId, method: 'inject', args: [deps.map(serializeValue), serializeValue(cb)] }),
+    inject: (deps, cb) => bridgeCall('ctxCall', { ctx: ctxId, method: 'inject', args: [deps.map(x => serializeValue(x)), serializeValue(cb)] }),
     effect: (disposer) => bridgeCall('ctxCall', { ctx: ctxId, method: 'effect', args: [serializeValue(disposer)] }),
     logger: () => ({ error: () => {}, info: () => {}, warn: () => {}, debug: () => {} }),
     i18n: { define: () => {} },
@@ -162,7 +172,7 @@ function makeCtx(ctxId) {
       option(name, alias, opts) { this._options.push({ name, alias, opts: opts || {} }); return this },
       userFields() { return this },
       alias() { return this },
-      action(fn) { registry.register(parsed.name, parsed.argDef, this._options.map(serializeValue), fn); return this },
+      action(fn) { registry.register(parsed.name, parsed.argDef, this._options.map(x => serializeValue(x)), fn); return this },
     }
     return builder
   }

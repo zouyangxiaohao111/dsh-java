@@ -1,0 +1,31 @@
+/**
+ * Function plugin registering the `sessionStats` projection unit: whole-log
+ * turn/step counts and LLM/tool/first-token/decode wall times served through
+ * the session-projection seam (registry snapshot, change feed, and every
+ * projection carrier), so clients render full-session figures that paging and
+ * compaction cannot change. The plugin owns only the fold; delivery is the
+ * seam's.
+ *
+ * ESM form of the real @deepseek-ai/dsh-session-stats plugin (type-stripped
+ * only; no CJS transform). This is the exact shape GraalJS standalone cannot
+ * load without the hand-written CJS shims under ../node_modules — the Node
+ * worker host loads it natively.
+ *
+ * @module @deepseek-ai/dsh-session-stats
+ */
+
+import { sessionStatsProjectionDefinition } from './projection.js'
+
+/** Cordis plugin name. */
+export const name = 'session-stats'
+/** The projection registry is the plugin's whole purpose; without it the fiber stays pending. */
+export const inject = ['sessionProjections']
+
+/**
+ * Register the `sessionStats` unit; the registration is an effect on this
+ * plugin's fiber, so unloading removes the key.
+ * @param ctx - registrant context carrying the projection registry.
+ */
+export function apply(ctx) {
+  ctx.sessionProjections.register(sessionStatsProjectionDefinition)
+}
