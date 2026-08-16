@@ -37,6 +37,8 @@ public final class Fiber {
     /** Per-fiber listeners for the `internal/update` waterfall (fiber.ts:202). */
     public final Map<String, DisposableList<Events.Listener>> _hooks = new HashMap<>();
     final DisposableList<Disposable> _disposables = new DisposableList<>();
+    /** Disposer → its effect metadata (fiber.ts symbols.effect). */
+    private final Map<Disposable, EffectMeta> _effectMeta = new IdentityHashMap<>();
 
     Throwable _error;
     String epoch = INACTIVE;
@@ -105,6 +107,7 @@ public final class Fiber {
             throw new CordisError(CordisError.Code.INACTIVE_EFFECT);
         }
         List<Disposable> disposables = new ArrayList<>();
+        EffectMeta meta = new EffectMeta(label, new ArrayList<>());
         Disposable dispose = () -> {
             CompletableFuture<Void> task = CompletableFuture.completedFuture(null);
             for (int i = disposables.size() - 1; i >= 0; i--) {
@@ -114,6 +117,9 @@ public final class Fiber {
             disposables.clear();
             return task;
         };
+        Disposable ref = () -> dispose.dispose();
+        this._disposables.push(ref);
+        this._effectMeta.put(ref, meta);
 
         Object result;
         try {
@@ -122,19 +128,30 @@ public final class Fiber {
             throw t instanceof RuntimeException re ? re : new RuntimeException(t);
         }
         if (result instanceof Disposable d) {
-            disposables.add(d);
+            collect(d, meta, disposables);
         } else if (result instanceof CompletableFuture<?> cf) {
             ((CompletableFuture<Disposable>) cf).thenAccept(d -> {
-                if (d != null) disposables.add(d);
+                if (d != null) collect(d, meta, disposables);
             }).exceptionally(t -> { ctx.logger().error(t); return null; });
         } else if (result instanceof Iterable<?> it) {
-            for (Object o : it) if (o instanceof Disposable d) disposables.add(d);
+            for (Object o : it) if (o instanceof Disposable d) collect(d, meta, disposables);
         } else if (result != null) {
             throw new IllegalArgumentException("Invalid effect");
         }
 
-        this._disposables.push(dispose);
-        return () -> dispose.dispose();
+        return ref;
+    }
+
+    /** Collect a disposer produced by an effect body; a nested effect wrapper is
+     *  adopted by the parent (removed from the fiber list) and surfaced as a
+     *  child in its metadata tree (fiber.ts:448-453). */
+    private void collect(Disposable d, EffectMeta parent, List<Disposable> disposables) {
+        disposables.add(d);
+        EffectMeta child = _effectMeta.remove(d);
+        if (child != null) {
+            this._disposables.delete(d);   // parent now owns the nested effect
+            parent.children.add(child);
+        }
     }
 
     /** Metadata tree for effect diagnostics (fiber.ts:96-101). */
@@ -142,7 +159,12 @@ public final class Fiber {
 
     /** Return metadata for currently registered effects (fiber.ts:568-572). */
     public List<EffectMeta> getEffects() {
-        return List.of();
+        List<EffectMeta> out = new ArrayList<>();
+        for (Disposable d : this._disposables) {
+            EffectMeta meta = _effectMeta.get(d);
+            if (meta != null) out.add(meta);
+        }
+        return out;
     }
 
     // ---- dependency / epoch machinery (fiber.ts:597-696) ----
@@ -221,6 +243,7 @@ public final class Fiber {
     /** Unload: run disposers in reverse order (fiber.ts:675-696). */
     CompletableFuture<Void> unload() {
         List<Disposable> toRun = this._disposables.clear();
+        for (Disposable d : toRun) this._effectMeta.remove(d);
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
         for (Disposable d : toRun) {
             chain = chain.thenCompose(v -> safeDispose(d));

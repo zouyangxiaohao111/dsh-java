@@ -34,6 +34,17 @@ public final class Registry {
 
     public Collection<Plugin.Runtime> values() { return _internal.values(); }
 
+    /** Iterate the registered plugin callbacks (registry.ts:270-272). */
+    public Set<Plugin<?>> keys() { return _internal.keySet(); }
+
+    /** Iterate {@code [callback, runtime]} pairs (registry.ts:280-282). */
+    public Set<Map.Entry<Plugin<?>, Plugin.Runtime>> entries() { return _internal.entrySet(); }
+
+    /** Visit every registered runtime, receiving (runtime, plugin) like registry.ts:289-291. */
+    public void forEach(java.util.function.BiConsumer<Plugin.Runtime, Plugin<?>> action) {
+        _internal.forEach((plugin, runtime) -> action.accept(runtime, plugin));
+    }
+
     /** Start a callback once requested dependencies are available (registry.ts:300-302). */
     public Fiber inject(Context caller, Inject deps, PluginSpec.PluginApply<Void> callback) {
         PluginSpec<Void> spec = PluginSpec.of(callback);
@@ -54,9 +65,8 @@ public final class Registry {
             _internal.put(plugin, runtime);
         }
 
-        Map<String, Object> injectMap = new LinkedHashMap<>();
-        for (String name : plugin.inject()) injectMap.put(name, null);
-        injectMap.putAll(plugin.injectConfig());
+        // @Inject class annotations + inject()/injectConfig() overrides (registry.ts:71-89, 330)
+        Map<String, Object> injectMap = Inject.resolve(plugin);
 
         Fiber fiber = new Fiber(caller, config, injectMap, runtime);
         runtime.fibers.push(fiber);

@@ -26,4 +26,22 @@ public final class Inject {
         if (inject != null) result.putAll(inject.entries);
         return result;
     }
+
+    /** Normalize a plugin's dependency declarations (registry.ts:71-89, 330).
+     *  <p>Order: {@code @Inject} class annotations (incl. superclasses) first,
+     *  then the {@code inject()} override, then {@code injectConfig()} — later
+     *  entries override earlier ones, so an explicit override beats an
+     *  annotation for the same service name. */
+    public static Map<String, Object> resolve(Plugin<?> plugin) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (Class<?> c = plugin.getClass(); c != null; c = c.getSuperclass()) {
+            for (dev.dsh.cordis.annotation.Inject ann
+                    : c.getAnnotationsByType(dev.dsh.cordis.annotation.Inject.class)) {
+                for (String name : ann.value()) result.put(name, null);
+            }
+        }
+        for (String name : plugin.inject()) result.put(name, null);
+        result.putAll(plugin.injectConfig());
+        return result;
+    }
 }

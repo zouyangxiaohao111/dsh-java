@@ -104,7 +104,12 @@ public final class Context {
             if (!Objects.equals(Reflect.effectiveIsolate(f.parent, name), key)) break;
             f = f.parent.fiber;
         }
-        return this.reflect.get(this, name, false);
+        // fiber.ts:163-165 — reaching a non-plugin fiber (or an isolation boundary)
+        // without the service throws, mirroring reflect.ts:144 "cannot get property
+        // \"X\" without inject". The root context read (fiber.runtime == null) is
+        // handled by the early return above and stays null for a missing service.
+        throw new CordisError(CordisError.Code.INACTIVE_EFFECT,
+                "cannot get property \"" + name + "\" without inject");
     }
 
     /** Overwrite a provided service's value; computed accessors route to their setter. */
