@@ -1,3 +1,8 @@
+// dsh-java — 根聚合工程(M6-1 多模块拆分)。
+//
+// 公共配置(Java 25 toolchain / JUnit / AssertJ / testLogging)在 subprojects 下沉到各模块,
+// 各模块在自身 build.gradle.kts 声明模块特有依赖。模块图(m6-design §3):
+//   dsh-cordis(只依赖 JDK + Jackson)← dsh-js-host(GraalJS)← dsh-reload ← dsh-loader ← dsh-host
 plugins {
     java
 }
@@ -5,31 +10,34 @@ plugins {
 group = "dev.dsh"
 version = "0.1.0-SNAPSHOT"
 
-repositories {
-    mavenCentral()
-}
+subprojects {
+    apply(plugin = "java")
 
-dependencies {
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.18.2")
-    implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.18.2")
-    implementation("org.graalvm.polyglot:polyglot:24.1.1")
-    implementation("org.graalvm.polyglot:js:24.1.1")
-    testImplementation(platform("org.junit:junit-bom:5.11.4"))
-    testImplementation("org.junit.jupiter:junit-jupiter")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-    testImplementation("org.assertj:assertj-core:3.27.3")
-}
+    group = "dev.dsh"
+    version = "0.1.0-SNAPSHOT"
 
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
+    repositories {
+        mavenCentral()
     }
-}
 
-tasks.test {
-    useJUnitPlatform()
-    testLogging {
-        events("passed", "failed", "skipped")
-        showStandardStreams = true
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(25)
+        }
+    }
+
+    dependencies {
+        testImplementation(platform("org.junit:junit-bom:5.11.4"))
+        testImplementation("org.junit.jupiter:junit-jupiter")
+        testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+        testImplementation("org.assertj:assertj-core:3.27.3")
+    }
+
+    tasks.test {
+        useJUnitPlatform()
+        testLogging {
+            events("passed", "failed", "skipped")
+            showStandardStreams = true
+        }
     }
 }
