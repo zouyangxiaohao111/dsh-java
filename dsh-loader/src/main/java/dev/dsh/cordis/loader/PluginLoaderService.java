@@ -35,6 +35,7 @@ import java.util.Set;
 import java.util.function.Consumer;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
+import java.util.stream.Stream;
 
 /**
  * 配置驱动加载(design §2 PluginLoaderService):读 cordis.yml → 条目树 → 逐条注册进 registry。
@@ -283,12 +284,30 @@ public final class PluginLoaderService implements AutoCloseable {
         Path source = null;
         ClassLoader cl = null;
         String lower = ref.toLowerCase(Locale.ROOT);
-        if (re.abs() != null && lower.endsWith(".java")) {
-            // 源码:编译 → 隔离 ClassLoader → 实例化(复用 M3 PluginCompiler + PluginClassLoaderFactory)
+        if (re.abs() != null && Files.isDirectory(re.abs())) {
+            // 源码目录(M6-7 java: 目录源):整目录编译 → 从编译产物扫描 Plugin 类 → 实例化
+            Path classesDir = compiler.compileTree(re.abs(),
+                    outputDir.resolve(re.abs().getFileName().toString() + ".classes"));
+            cl = clFactory.create(List.of(classesDir), getClass().getClassLoader());
+            try {
+                plugin = instantiateFromClassesDir(cl, classesDir, re.abs());
+            } catch (Exception e) {
+                closeQuietly(cl);
+                throw e;
+            }
+            source = re.abs();
+        } else if (re.abs() != null && lower.endsWith(".java")) {
+            // 源码:编译 → 隔离 ClassLoader → 从编译产物扫描 Plugin 类 → 实例化(复用 M3
+            // PluginCompiler + PluginClassLoaderFactory;扫描支持带包名的单文件源,M6-7)
             Path classesDir = compiler.compile(re.abs(),
                     outputDir.resolve(re.abs().getFileName().toString() + ".classes"));
             cl = clFactory.create(List.of(classesDir), getClass().getClassLoader());
-            plugin = instantiate(cl, re.abs().getFileName().toString().replace(".java", ""));
+            try {
+                plugin = instantiateFromClassesDir(cl, classesDir, re.abs());
+            } catch (Exception e) {
+                closeQuietly(cl);
+                throw e;
+            }
             source = re.abs();
         } else if (re.abs() != null && lower.endsWith(".class")) {
             // .class 文件:以所在目录为 classpath 根,按路径推导类名
@@ -572,6 +591,39 @@ public final class PluginLoaderService implements AutoCloseable {
         if (candidates.size() > 1) {
             throw new IllegalStateException("ambiguous plugins in jar: " + jar + " -> " + candidates
                     + " (declare mainClass)");
+        }
+        return (Plugin<?>) candidates.get(0).getDeclaredConstructor().newInstance();
+    }
+
+    /**
+     * 从编译产物目录扫描并实例化唯一的 {@code implements Plugin} 类(M6-7 源码目录源)。
+     * 扫描用 {@link Class#forName(String, boolean, ClassLoader)} 的 {@code initialize=false}
+     * 避免发现期触发静态初始化;依赖缺失/链接错误的类跳过。零候选或多余一个 → 报错。
+     */
+    @SuppressWarnings("unchecked")
+    private static Plugin<?> instantiateFromClassesDir(ClassLoader cl, Path classesDir, Path sourceRoot) throws Exception {
+        List<Class<?>> candidates = new ArrayList<>();
+        try (Stream<Path> walk = Files.walk(classesDir)) {
+            for (Path p : walk.filter(Files::isRegularFile).filter(p -> p.toString().endsWith(".class")).toList()) {
+                String rel = classesDir.relativize(p).toString().replace('\\', '/');
+                String cn = rel.substring(0, rel.length() - ".class".length()).replace('/', '.');
+                try {
+                    Class<?> cls = Class.forName(cn, false, cl);
+                    if (Plugin.class.isAssignableFrom(cls) && !cls.isInterface()
+                            && !Modifier.isAbstract(cls.getModifiers())) {
+                        candidates.add(cls);
+                    }
+                } catch (ClassNotFoundException | LinkageError ignored) {
+                    // 无关类或依赖缺失(链接期,含 NoClassDefFoundError),跳过
+                }
+            }
+        }
+        if (candidates.isEmpty()) {
+            throw new IllegalStateException("no Cordis plugin found in compiled source dir: " + sourceRoot);
+        }
+        if (candidates.size() > 1) {
+            throw new IllegalStateException("ambiguous plugins in source dir: " + sourceRoot + " -> " + candidates
+                    + " (refactor to a single plugin class per source dir)");
         }
         return (Plugin<?>) candidates.get(0).getDeclaredConstructor().newInstance();
     }

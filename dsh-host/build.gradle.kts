@@ -9,6 +9,9 @@ dependencies {
     implementation(project(":dsh-js-host"))
     implementation(project(":dsh-reload"))
     implementation(project(":dsh-loader"))
+    // M6-7 profile 配置写回(cordis.yml / cordis.patch.yml)读改写
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.18.2")
+    implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.18.2")
 }
 
 application {

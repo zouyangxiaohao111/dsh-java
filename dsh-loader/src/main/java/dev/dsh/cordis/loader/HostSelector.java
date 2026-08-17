@@ -97,12 +97,17 @@ public final class HostSelector {
             return new ResolvedEntry(entry, kind, false, ref, candidate);
         }
 
-        // 显式宿主:java: 类名不落盘;.java/.class/.jar 源落盘;js 路径落盘
+        // 显式宿主:java: 类名不落盘;.java/.class/.jar 源落盘;目录源(整目录编译,M6-7)落盘;
+        // js 路径落盘
         if (kind == HostKind.JAVA) {
             String lower = ref.toLowerCase(Locale.ROOT);
-            Path abs = (lower.endsWith(".java") || lower.endsWith(".class") || lower.endsWith(".jar"))
-                    ? baseDir.resolve(ref).normalize()
-                    : null;
+            Path abs;
+            if (lower.endsWith(".java") || lower.endsWith(".class") || lower.endsWith(".jar")) {
+                abs = baseDir.resolve(ref).normalize();
+            } else {
+                Path resolved = baseDir.resolve(ref).normalize();
+                abs = Files.isDirectory(resolved) ? resolved : null;   // 目录源 → 整目录编译
+            }
             return new ResolvedEntry(entry, kind, true, ref, abs);
         }
         Path abs = baseDir.resolve(ref).normalize();

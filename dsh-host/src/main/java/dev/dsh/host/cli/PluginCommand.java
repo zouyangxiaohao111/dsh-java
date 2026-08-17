@@ -1,32 +1,42 @@
 package dev.dsh.host.cli;
 
+import dev.dsh.host.plugin.PluginInstaller;
+
 import java.io.PrintStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.List;
 
 /**
  * {@code dshj plugin --profile <name> <args...>} —— profile 插件管理(m6-design §4)。
  *
- * <p>M6-4 骨架:实现 {@code add <spec>} 的参数解析与校验,并打印"将生成的 cordis.yml 条目 /
- * 安装计划"。真正的 Java 侧安装(jar 从 Maven、源码从 GitHub)是 M6-7;dsh 侧
- * {@code pnpm add} 消费是 M6-6。移除/列出等其它子命令给出明确未实现提示。
+ * <p>M6-7:实现 {@code add <spec>} 的真实 Java 侧安装(jar 从 Maven/本地、源码从本地/GitHub,
+ * 经 {@link PluginInstaller});JS 侧({@code node:}/{@code graaljs:}/裸 npm)提示走真实
+ * dsh {@code plugin add}(pnpm,M6-6)。移除/列出等其它子命令给出明确未实现提示。
  *
  * <p>{@code <spec>} 形式(与 cordis.yml {@code source}/{@code path} 对齐):
  * <ul>
  *   <li>{@code jar:<path|maven-coords>} — 外部 jar 插件(Java 宿主,M6-7);</li>
- *   <li>{@code java:<class|source>} — Java 源码/类(M6-7);</li>
+ *   <li>{@code java:<class|source>} — Java 源码/类(M6-7,source 可含 github:/git+);</li>
  *   <li>{@code node:<path>} / {@code graaljs:<path>} — 显式 JS 宿主;</li>
  *   <li>裸包名 {@code @scope/pkg} / {@code pkg} — dsh JS 插件(pnpm,经桥,M6-6);</li>
- *   <li>{@code git+...} / {@code github:...} — git 源(M6-7)。</li>
+ *   <li>{@code git+...} / {@code github:...} — Java 源码的 git 源(M6-7)。</li>
  * </ul>
  */
 public final class PluginCommand {
 
+    /** 安装器 seam:测试注入指向临时 profile 根的安装器,避免写真实仓库 profiles/。 */
+    private static PluginInstaller installer = new PluginInstaller();
+
+    static void setInstaller(PluginInstaller value) {
+        installer = value;
+    }
+
     private PluginCommand() {
     }
 
-    /** 一个被解析校验的 {@code add <spec>}:前缀(可为 null)与目标。 */
+    /**
+     * 一个被解析校验的 {@code add <spec>}:前缀(可为 null,如 {@code jar}/{@code java}/
+     * {@code node}/{@code graaljs},或裸 npm 包名时 null)与目标。M6-7 安装器复用同一解析。
+     */
     public record Spec(String prefix, String target) {
         /** 将生成的 cordis.yml 条目 source/path 值。 */
         public String entryValue() {
@@ -81,20 +91,33 @@ public final class PluginCommand {
                 ok = false;
                 continue;
             }
-            out.println("dshj plugin add: " + spec);
-            out.println("  -> cordis.yml entry (to be written on install): source: " + parsed.entryValue());
-            out.println("  -> target profile: " + profile);
-            switch (parsed.prefix() == null ? "npm" : parsed.prefix()) {
-                case "jar", "java" -> out.println("  -> Java plugin install (Maven / GitHub) is M6-7; M6-4 validates the shape only");
-                case "node", "graaljs" -> out.println("  -> JS plugin via the bridge; dependency install via pnpm (M6-6)");
-                default -> out.println("  -> dsh JS plugin: pnpm add into the profile, then loaded via the bridge (M6-6)");
+            // JS 侧(node:/graaljs:/裸 npm)与 Java 侧(jar:/java:/github:/git+)分流。
+            // JS 侧走真实 dsh plugin add(pnpm);Java 侧是本命令的 M6-7 职责。
+            boolean javaSide = switch (parsed.prefix() == null ? "" : parsed.prefix()) {
+                case "jar", "java", "github", "git+" -> true;
+                default -> false;
+            };
+            if (!javaSide) {
+                out.println("dshj plugin add: " + spec);
+                out.println("  -> target profile: " + profile);
+                out.println("  -> JS plugin: run the real dsh plugin add (pnpm) into the profile, then it loads via the JS bridge");
+                continue;
+            }
+            try {
+                PluginInstaller.Installed installed = installer.install(profile, spec, out, err);
+                out.println("dshj plugin add: installed '" + spec + "'");
+                out.println("  -> entry: name: " + installed.name() + ", source: " + installed.source());
+                out.println("  -> profile: " + profile + " (" + installed.configFile() + ")");
+            } catch (PluginInstaller.InstallException e) {
+                err.println("dshj plugin add: " + e.getMessage());
+                ok = false;
             }
         }
-        return ok ? 0 : 2;
+        return ok ? 0 : 1;
     }
 
-    /** 解析并校验一个 {@code <spec>};非法返回 null。 */
-    static Spec parseSpec(String spec) {
+    /** 解析并校验一个 {@code <spec>};非法返回 null。M6-7 安装器也用它。 */
+    public static Spec parseSpec(String spec) {
         if (spec == null || spec.isBlank()) return null;
         String trimmed = spec.trim();
         int colon = trimmed.indexOf(':');
@@ -117,13 +140,5 @@ public final class PluginCommand {
             case "jar", "java", "node", "graaljs", "graal" -> true;
             default -> false;
         };
-    }
-
-    /** 本地 jar 路径是否真的存在(供 add 校验提示)。 */
-    static boolean isExistingJar(String spec) {
-        Spec parsed = parseSpec(spec);
-        if (parsed == null || !"jar".equals(parsed.prefix())) return false;
-        String t = parsed.target();
-        return t.endsWith(".jar") && Files.isRegularFile(Path.of(t));
     }
 }

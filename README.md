@@ -78,7 +78,8 @@ git submodule update --init --depth 1   # 或 ./setup.sh(vendor/dsh = deepseek-h
 ./dshj --help                            # 帮助(web/headless/cli 任意 profile)
 ./dshj web boot                          # boot 默认 web profile(Java harness)
 ./dshj --profile headless boot           # 指定 profile
-./dshj plugin --profile web add <spec>   # 插件 add 骨架(jar:/java: 安装是 M6-7)
+./dshj plugin --profile web add <spec>   # 插件 add:jar:<maven/路径> 从 MavenLocal/Central 装;
+                                        #   java:<目录|github:|git+> 装源码(JS 侧走真实 dsh plugin add)
 ```
 
 - `profiles/<name>/cordis.yml` 声明插件集;`$DSH_HOME` 可覆盖 profile 根(镜像 dsh)。

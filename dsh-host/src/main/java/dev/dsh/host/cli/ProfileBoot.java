@@ -69,8 +69,11 @@ public final class ProfileBoot {
         return profilesRoot;
     }
 
-    /** 解析 DSH_HOME(未设回退 repo/profiles),镜像 dsh 的 {@code resolveDshHome}。 */
-    static Path defaultProfilesRoot() {
+    /**
+     * 解析 profile 根:DSH_HOME(未设回退 repo/profiles),镜像 dsh 的 {@code resolveDshHome}。
+     * M6-7 安装器复用同一解析,保证 {@code plugin add} 写的位置与 {@code boot} 读的一致。
+     */
+    public static Path defaultProfilesRoot() {
         String home = System.getenv("DSH_HOME");
         if (home != null && !home.isBlank()) {
             return Path.of(home).resolve("profiles");

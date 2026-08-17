@@ -2,6 +2,10 @@ package dev.dsh.host.cli;
 
 import dev.dsh.cordis.js.HostKind;
 import dev.dsh.cordis.loader.LoadedPlugin;
+import dev.dsh.host.plugin.PluginInstaller;
+import dev.dsh.host.plugin.PluginTestFixtures;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -16,12 +20,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * M6-4 应用层 CLI:参数解析(镜像 dsh 命令形状)+ {@code plugin add} 骨架 + profile boot。
+ * M6-4 应用层 CLI:参数解析(镜像 dsh 命令形状)+ {@code plugin add}(M6-7 真实安装)+ profile boot。
  */
 class DshCliTest {
 
     @TempDir
     Path tmp;
+
+    /** M6-7 CLI 安装测试用:临时 profile 根 + mavenLocal,不写真实仓库 profiles/。 */
+    @BeforeEach
+    void injectTempInstaller() {
+        Path profileHome = tmp.resolve("profiles");
+        Path mavenLocal = tmp.resolve("m2/repository");
+        PluginCommand.setInstaller(new PluginInstaller(
+                new PluginInstaller.Config(profileHome, mavenLocal, List.of(), tmp)));
+    }
+
+    @AfterEach
+    void resetInstaller() {
+        PluginCommand.setInstaller(new PluginInstaller());
+    }
 
     private static CliInvocation parse(String... args) {
         return CliArgs.parse(args, new String[1]);
@@ -139,15 +157,34 @@ class DshCliTest {
     }
 
     @Test
-    void runPluginAddPrintsPlan() {
+    void runPluginAddJsSidePromptsRealDsh() {
         String out = runCaptured(args("plugin", "--profile", "web", "add", "@koishijs/plugin-echo"));
-        assertThat(out).contains("cordis.yml entry").contains("@koishijs/plugin-echo").contains("web");
+        assertThat(out).contains("@koishijs/plugin-echo").contains("web")
+                .contains("real dsh plugin add");
     }
 
     @Test
-    void runPluginAddValidatesJavaSpec() {
-        String out = runCaptured(args("plugin", "--profile", "web", "add", "jar:./plugins/x.jar"));
-        assertThat(out).contains("jar:./plugins/x.jar").contains("M6-7");
+    void runPluginAddMissingLocalJarErrors() {
+        // Java 侧安装:本地 jar 缺失 → 报错(不写配置),退出码 1
+        Captured c = runCapture(args("plugin", "--profile", "web", "add", "jar:./nope-xyz.jar"));
+        assertThat(c.exit).isEqualTo(1);
+        assertThat(c.err).contains("jar not found");
+    }
+
+    @Test
+    void runPluginAddInstallsJarEndToEnd() throws Exception {
+        // M6-7 CLI 端到端:jar:<maven 坐标> 从临时 mavenLocal 解析 → 复制 → 写 cordis.yml
+        Path mavenLocal = tmp.resolve("m2/repository");
+        Path jar = PluginTestFixtures.compilePluginJar(tmp.resolve("fix.jar"));
+        PluginTestFixtures.seedMavenLocal(mavenLocal, "test.group", "demo-plugin", "0.1.0", jar);
+
+        Captured c = runCapture(args("plugin", "--profile", "web", "add", "jar:test.group:demo-plugin:0.1.0"));
+        assertThat(c.exit).isEqualTo(0);
+        assertThat(c.out).contains("installed").contains("jar:./plugins/jars/demo-plugin-0.1.0.jar");
+        Path copied = tmp.resolve("profiles/web/plugins/jars/demo-plugin-0.1.0.jar");
+        assertThat(copied).exists();
+        Path yml = tmp.resolve("profiles/web/cordis.yml");
+        assertThat(Files.readString(yml)).contains("jar:./plugins/jars/demo-plugin-0.1.0.jar");
     }
 
     @Test
