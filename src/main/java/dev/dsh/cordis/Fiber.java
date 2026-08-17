@@ -379,6 +379,14 @@ public final class Fiber {
         });
     }
 
+    /** The error recorded by the last apply (null while healthy). A non-null value
+     *  means the fiber failed to load — the plugin's apply threw and was swallowed by
+     *  {@link #reload()}, leaving the fiber in {@link FiberState#FAILED}. Loaders use
+     *  this to detect registration-period failures that do not surface as exceptions. */
+    public Throwable error() {
+        return _error;
+    }
+
     /** Remove the built-in service effects from the root fiber so a root
      *  dispose/restart does not tear down the core services (context.ts:82). */
     void clearRootEffects() {

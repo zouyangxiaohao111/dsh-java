@@ -58,6 +58,12 @@ public final class LoadedPlugin implements AutoCloseable {
         if (host != null) host.close();
     }
 
+    /** 仅从 registry 解除 runtime(dispose fiber),保留底层宿主 —— 替换/回滚提交前先腾出
+     *  服务名;新实现校验失败时旧宿主仍可用,可重新 {@link #register(Context)} 恢复旧实现。 */
+    public void unregisterRuntime(Context ctx) {
+        ctx.registry.delete(plugin);
+    }
+
     /** 仅释放底层宿主(用于已加载未注册的句柄回滚清理)。 */
     @Override
     public void close() {

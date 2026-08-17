@@ -1,6 +1,8 @@
 package dev.dsh.cordis.loader;
 
 import dev.dsh.cordis.Context;
+import dev.dsh.cordis.Fiber;
+import dev.dsh.cordis.FiberState;
 import dev.dsh.cordis.Plugin;
 import dev.dsh.cordis.js.HostKind;
 import dev.dsh.cordis.js.JsHost;
@@ -20,6 +22,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -293,39 +296,96 @@ public final class PluginLoaderService implements AutoCloseable {
             throw ex;
         }
 
-        // Phase B:提交 — 先处置已移除条目,再替换/注册变更条目(顺序 = 配置顺序,提供者先于消费者)。
+        // Phase B:提交 — 两段提交,整批原子性。
+        // B1:解除被移除条目的 runtime(释放服务名),再逐条替换/注册变更条目;注册后校验新 fiber
+        //    实际生效(apply 抛错被 Fiber.reload 吞掉 → 状态 FAILED,registry.plugin() 不抛)。
+        //    任一条失败 → 回滚整批(恢复所有被替换/移除条目的旧实现),loaded 与 registry 不分裂。
+        // B2:全部成功 → 关闭被替换/移除条目的旧宿主,批量替换 loaded 引用。
+        List<LoadedPlugin> removed = new ArrayList<>();
         for (LoadedPlugin cur : loaded) {
-            if (!nextNames.contains(cur.entry().name())) cur.unregister(ctx);
-        }
-        for (LoadedPlugin np : next.values()) {
-            LoadedPlugin old = byName.get(np.entry().name());
-            if (np == old) continue;                  // 复用
-            if (old != null) old.unregister(ctx);     // 替换:先处置旧实现
-            try {
-                np.register(ctx);
-            } catch (Exception ex) {
-                if (old != null) {                    // 回滚到旧实现
-                    try { old.register(ctx); } catch (Exception ignored) { }
-                }
-                throw ex;
+            if (!nextNames.contains(cur.entry().name())) {
+                cur.unregisterRuntime(ctx);   // 腾出服务名,宿主保留以便整批回滚
+                removed.add(cur);
             }
         }
+        List<LoadedPlugin> registered = new ArrayList<>();   // 已注册成功的新句柄
+        LoadedPlugin pending = null;                          // 当前处理中的句柄(未入 registered,用于回滚)
+        try {
+            for (LoadedPlugin np : next.values()) {
+                LoadedPlugin old = byName.get(np.entry().name());
+                if (np == old) continue;                      // 复用
+                pending = np;
+                if (old != null) old.unregisterRuntime(ctx);  // 替换:先解除旧 runtime,宿主保留
+                np.register(ctx);
+                verifyFiber(np, ctx);
+                registered.add(np);
+            }
+            pending = null;
+        } catch (Exception ex) {
+            rollbackBatch(byName, removed, registered, pending, ctx);
+            throw ex;
+        }
+        // 提交:新实现生效 — 关闭被替换/移除条目的旧宿主,批量替换 loaded 引用。
+        for (LoadedPlugin np : next.values()) {
+            LoadedPlugin old = byName.get(np.entry().name());
+            if (np != old && old != null) old.close();
+        }
+        for (LoadedPlugin cur : removed) cur.close();
         loaded.clear();
         loaded.addAll(next.values());
     }
 
-    /** 仅重载一个插件(源文件变更):加载新实现 → 替换旧;失败回滚旧实现。 */
+    /** 仅重载一个插件(源文件变更):加载新实现 → 替换旧;失败回滚旧实现。
+     *  新实现注册后校验其 fiber 实际生效(apply 抛错被 Fiber.reload 吞掉 → 状态 FAILED),
+     *  校验失败则释放新句柄并恢复旧实现(旧宿主保留至提交前)。 */
     private void reloadPlugin(LoadedPlugin old, int index) throws Exception {
         LoadedPlugin np = loadPlugin(old.entry());
-        old.unregister(ctx);
         try {
+            old.unregisterRuntime(ctx);          // 腾出服务名;保留旧宿主以便回滚
             np.register(ctx);
+            verifyFiber(np, ctx);
         } catch (Exception ex) {
+            np.unregister(ctx);                  // 释放新 handle(fiber + 宿主)
             try { old.register(ctx); } catch (Exception ignored) { }
-            np.close();
             throw ex;
         }
+        old.close();                             // 提交:新实现生效,关闭旧宿主
         loaded.set(index, np);
+    }
+
+    /** 校验新句柄注册后其 fiber 实际生效:状态非 FAILED 且无 apply 错误。apply 抛错被
+     *  {@link Fiber#reload()} 吞掉并记入 {@link Fiber#error()}(状态转 FAILED),此时
+     *  {@code registry.plugin()} 不抛 —— 未生效视为注册失败,须回滚而非提交坏实现。 */
+    private static void verifyFiber(LoadedPlugin np, Context ctx) throws Exception {
+        Plugin.Runtime rt = ctx.registry.get(np.plugin());
+        if (rt == null) throw new IllegalStateException("plugin not registered: " + np.entry().name());
+        Fiber latest = null;
+        for (Fiber f : rt.fibers) latest = f;      // 最新 fiber = 本次注册
+        if (latest == null) throw new IllegalStateException("plugin has no fiber: " + np.entry().name());
+        Throwable err = latest.error();
+        if (latest.state == FiberState.FAILED || err != null) {
+            throw new IllegalStateException("plugin apply failed: " + np.entry().name()
+                    + " (" + (err != null ? err.getMessage() : latest.state) + ")", err);
+        }
+    }
+
+    /** 整批回滚:释放已注册/注册失败的新句柄,恢复所有被替换与被移除条目的旧实现(宿主保留中)。 */
+    private static void rollbackBatch(Map<String, LoadedPlugin> byName, List<LoadedPlugin> removed,
+                                      List<LoadedPlugin> registered, LoadedPlugin pending, Context ctx) {
+        if (pending != null) pending.unregister(ctx);            // 未通过校验/注册失败的新句柄
+        for (LoadedPlugin np : registered) np.unregister(ctx);   // 已注册成功的新句柄
+        Set<LoadedPlugin> restore = new LinkedHashSet<>(removed);
+        for (LoadedPlugin np : registered) {
+            LoadedPlugin old = byName.get(np.entry().name());
+            if (old != null) restore.add(old);
+        }
+        if (pending != null) {
+            LoadedPlugin old = byName.get(pending.entry().name());
+            if (old != null) restore.add(old);
+        }
+        for (LoadedPlugin old : restore) {
+            try { old.register(ctx); } catch (Exception ignored) { }
+        }
     }
 
     // ---- 内部:小工具 ----

@@ -300,6 +300,110 @@ class PluginLoaderServiceTest {
         }
     }
 
+    @Test
+    void reloadWithApplyingPluginThrowsKeepsOldAndReportsError() throws Exception {
+        // 新模块能加载但 apply() 抛错 → Fiber.reload 吞掉异常(状态 FAILED,registry.plugin() 不抛)
+        // → 提交前校验发现新 fiber 未生效 → 异常上报 + 旧实现保留,而非静默清空。
+        writeGreeter(tmp, "greeter.js", "v1", "greeter");
+        Files.writeString(tmp.resolve("greeter-bad.js"),
+                "module.exports = { name: 'greeter', provide: ['greet'], apply(ctx) { throw new Error('boom-apply'); } }");
+        Path yml = tmp.resolve("cordis.yml");
+        Files.writeString(yml, "plugins:\n  - name: greeter\n    path: ./greeter.js\n");
+        Context root = new Context();
+        PluginLoaderService loader = new PluginLoaderService(root);
+        try {
+            loader.load(yml);
+            assertThat(greet(root)).isEqualTo("v1");
+
+            Files.writeString(yml, "plugins:\n  - name: greeter\n    path: ./greeter-bad.js\n");
+            assertThatThrownBy(() -> loader.reload(yml))
+                    .isInstanceOf(Exception.class)
+                    .hasMessageContaining("apply failed");          // 异常被上报,非静默
+
+            assertThat(greet(root)).isEqualTo("v1");                // 旧 svc 仍在
+            assertThat(loader.loaded()).hasSize(1);
+            assertThat(loader.loaded().get(0).ref()).endsWith("greeter.js");
+        } finally {
+            loader.dispose();
+            root.fiber.dispose().join();
+        }
+    }
+
+    @Test
+    void updateIfChangedWithApplyingPluginThrowsKeepsOldAndReportsError() throws Exception {
+        // reloadPlugin 路径:源码改为 apply 抛错(可加载)→ 注册后校验失败 → 异常上报 + 旧实现保留
+        Path js = writeGreeter(tmp, "greeter.js", "v1", "greeter");
+        Path yml = tmp.resolve("cordis.yml");
+        Files.writeString(yml, "plugins:\n  - name: greeter\n    path: ./greeter.js\n");
+        Context root = new Context();
+        PluginLoaderService loader = new PluginLoaderService(root);
+        try {
+            loader.load(yml);
+            assertThat(greet(root)).isEqualTo("v1");
+            sleepMtime();
+
+            Files.writeString(js, "module.exports = { name: 'greeter', provide: ['greet'], apply(ctx) { throw new Error('boom-apply'); } }");
+            sleepMtime();
+            assertThatThrownBy(() -> loader.updateIfChanged())
+                    .isInstanceOf(Exception.class)
+                    .hasMessageContaining("apply failed");
+            assertThat(greet(root)).isEqualTo("v1");                // 旧 svc 仍在
+            assertThat(loader.loaded()).hasSize(1);
+        } finally {
+            loader.dispose();
+            root.fiber.dispose().join();
+        }
+    }
+
+    @Test
+    void reloadMultiEntryPartialFailureRollsBackWholeBatch() throws Exception {
+        // 两条目:a 被替换为可正常 apply 的新实现,b 被替换为 apply 抛错的实现 → 靠后条目注册失败
+        // → 整批回滚:已提交的 a 也恢复旧实现,loaded 与 registry 不分裂。
+        Files.writeString(tmp.resolve("a.js"),
+                "module.exports = { name: 'a', provide: ['a-svc'], apply(ctx) { ctx.provide('a-svc', 'a-v1'); } }");
+        Files.writeString(tmp.resolve("a2.js"),
+                "module.exports = { name: 'a', provide: ['a-svc'], apply(ctx) { ctx.provide('a-svc', 'a-v2'); } }");
+        Files.writeString(tmp.resolve("b.js"),
+                "module.exports = { name: 'b', provide: ['b-svc'], apply(ctx) { ctx.provide('b-svc', 'b-v1'); } }");
+        Files.writeString(tmp.resolve("b-bad.js"),
+                "module.exports = { name: 'b', provide: ['b-svc'], apply(ctx) { throw new Error('boom-b'); } }");
+        Path yml = tmp.resolve("cordis.yml");
+        Files.writeString(yml, """
+                plugins:
+                  - name: a
+                    path: ./a.js
+                  - name: b
+                    path: ./b.js
+                """);
+        Context root = new Context();
+        PluginLoaderService loader = new PluginLoaderService(root);
+        try {
+            loader.load(yml);
+            assertThat(svc(root, "a-svc")).isEqualTo("a-v1");
+            assertThat(svc(root, "b-svc")).isEqualTo("b-v1");
+            List<LoadedPlugin> before = loader.loaded();
+
+            Files.writeString(yml, """
+                    plugins:
+                      - name: a
+                        path: ./a2.js
+                      - name: b
+                        path: ./b-bad.js
+                    """);
+            assertThatThrownBy(() -> loader.reload(yml))
+                    .isInstanceOf(Exception.class)
+                    .hasMessageContaining("apply failed");
+
+            assertThat(svc(root, "a-svc")).isEqualTo("a-v1");       // 靠前已提交条目回滚
+            assertThat(svc(root, "b-svc")).isEqualTo("b-v1");
+            assertThat(loader.loaded()).hasSize(2);
+            assertThat(loader.loaded()).containsExactlyElementsOf(before);   // loaded 与 registry 一致
+        } finally {
+            loader.dispose();
+            root.fiber.dispose().join();
+        }
+    }
+
     // ---- dispose ----
 
     @Test
@@ -475,6 +579,12 @@ class PluginLoaderServiceTest {
     /** JS provide 的 'greet' 是 polyglot Value,经 toString 取文本;未提供时返回 null。 */
     private static String greet(Context root) {
         Object v = root.get("greet");
+        return v == null ? null : String.valueOf(v);
+    }
+
+    /** 读任一服务,经 toString 取文本;未提供时返回 null。 */
+    private static String svc(Context root, String name) {
+        Object v = root.get(name);
         return v == null ? null : String.valueOf(v);
     }
 
