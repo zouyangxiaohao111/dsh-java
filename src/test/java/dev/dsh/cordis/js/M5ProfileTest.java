@@ -92,10 +92,15 @@ class M5ProfileTest {
             // Java 插件 → JAVA 宿主;dsh JS 插件 → NODE 宿主(NodeWorkerJsHost)
             assertThat(loaded.get(0).kind()).isEqualTo(HostKind.JAVA);
             assertThat(loaded.get(1).kind()).isEqualTo(HostKind.JAVA);
+            java.util.List<JsHost> nodeHosts = new java.util.ArrayList<>();
             for (int i = 2; i < loaded.size(); i++) {
                 assertThat(loaded.get(i).kind()).isEqualTo(HostKind.NODE);
                 assertThat(loaded.get(i).host()).isInstanceOf(NodeWorkerJsHost.class);
+                nodeHosts.add(loaded.get(i).host());
             }
+            // M5 深化 ①:每 node: 插件独立 worker —— 三个 dsh 插件持有互不相同的
+            // NodeWorkerJsHost(不同 Node 进程),跨插件 ctx 调用并行互不阻塞。
+            assertThat(nodeHosts).doesNotHaveDuplicates();
 
             // Java 插件提供的服务在 registry
             assertThat((Object) root.get("counter")).isNotNull();

@@ -30,6 +30,14 @@ import java.util.stream.Stream;
  *
  * <p>每插件独立选 + 结果缓存({@link ConcurrentHashMap});热重载后调用
  * {@link #invalidate(Path)} 使缓存失效(文件语义可能已变)。
+ *
+ * <p><b>M5 深化 · 多 worker 并行</b>:每次 {@link #loadJs} 都新建独立宿主 —— Node 路径
+ * ({@link #loadNode})每插件一个 {@link NodeWorkerJsHost}(独立 Node 进程),Graal 路径每
+ * 插件一个 {@link GraalJsHost}(独立 context)。绝不跨插件共享宿主,因此两个独立插件的
+ * ctx 调用天然跑在不同 worker 上并行,互不阻塞(worker 进程级隔离,并行安全)。宿主
+ * 生命周期由调用方持有:经 {@link PluginLoaderService} 加载则随 {@code LoadedPlugin}
+ * 创建/回收(热重载、dispose 时 close),经 {@link ResolvedJsPlugin} 直接加载则
+ * try-with-resources 释放。
  */
 public final class PluginRuntimeResolver {
 
