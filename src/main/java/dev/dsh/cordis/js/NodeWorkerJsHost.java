@@ -12,7 +12,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -437,6 +439,11 @@ public final class NodeWorkerJsHost implements JsHost {
 
     JsonNode toJsonNode(Object value) {
         if (value == null) return NullNode.instance;
+        if (value == UNDEFINED) {
+            ObjectNode n = mapper.createObjectNode();
+            n.put("$kind", "undefined");
+            return n;
+        }
         if (value instanceof JsonNode j) return j;
         if (value instanceof NodeRef ref) {
             ObjectNode n = mapper.createObjectNode();
@@ -557,6 +564,19 @@ public final class NodeWorkerJsHost implements JsHost {
                         Throwable c = e.getCause() != null ? e.getCause() : e;
                         throw new NodeBridgeError("service invocation failed: " + svc.getClass().getSimpleName() + "." + method
                                 + " → " + c, c);
+                    }
+                }
+            }
+            // 无匹配方法 → 回退读 public 实例字段(JS 属性访问语义)。AgentRegistry 的
+            // internal/status 监听器读 fiber.state;Fiber.state 是 public volatile 字段,
+            // 没有 state() 访问器 —— 字段回退避免该监听器在每次 fiber 状态变更时抛错。
+            for (Field f : svc.getClass().getFields()) {
+                if (Modifier.isStatic(f.getModifiers())) continue;
+                if (f.getName().equals(method)) {
+                    try {
+                        return f.get(svc);
+                    } catch (IllegalAccessException e) {
+                        throw new NodeBridgeError("service field read failed: " + svc.getClass().getSimpleName() + "." + method, e);
                     }
                 }
             }

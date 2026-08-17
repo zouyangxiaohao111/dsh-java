@@ -88,6 +88,7 @@ function deserializeValue(v) {
     if (typeof fn !== 'function') throw new Error('unknown fn handle ' + v.id)
     return fn
   }
+  if (v.$kind === 'undefined') return undefined
   if (v.$kind === 'module') {
     const m = modById.get(v.id)
     if (m === undefined) throw new Error('unknown module handle ' + v.id)
@@ -148,6 +149,17 @@ function bridgeCall(type, payload) {
 
 // ---- ctx shim(与 ctx.js 同一契约面)----
 function makeCtx(ctxId) {
+  // logger 既可当函数调用(ctx.logger('agents').warn),也带方法属性 —— AgentRegistry 直接读
+  // this.ctx.logger.warn(...)(无 name 调用),故 logger 必须是"函数 + 方法"对象。
+  const noop = () => {}
+  const logger = function () { return logger }
+  logger.error = logger.info = logger.warn = logger.debug = noop
+  // 最小 fiber seam:AgentRegistry.hasLifecycleAncestor 做 identity 比较(fiber === candidate),
+  // 跨桥无法成立;提供终止链(fiber.parent.fiber === fiber)使其在首次比较即返回 false。
+  // 真实 fiber 状态/父子关系跨桥 → NEEDS。非可枚举:该链自引用,若被 serializeValue
+  // (Service 提供 self 时遍历 self.ctx 的 own enumerable keys)扫到会报循环引用。
+  const rootFiber = { state: 'active' }
+  rootFiber.parent = { fiber: rootFiber }
   const ctx = {
     on: (name, listener, opts) => bridgeCall('ctxCall', { ctx: ctxId, method: 'on', args: [serializeValue(listener), name, opts || {}] }),
     once: (name, listener, opts) => bridgeCall('ctxCall', { ctx: ctxId, method: 'once', args: [serializeValue(listener), name, opts || {}] }),
@@ -155,30 +167,36 @@ function makeCtx(ctxId) {
     provide: (name, value) => bridgeCall('ctxCall', { ctx: ctxId, method: 'provide', args: [name, serializeValue(value)] }),
     get: (name) => bridgeCall('ctxCall', { ctx: ctxId, method: 'get', args: [name] }),
     inject: (deps, cb) => bridgeCall('ctxCall', { ctx: ctxId, method: 'inject', args: [deps.map(x => serializeValue(x)), serializeValue(cb)] }),
+    accessor: (name, options) => bridgeCall('ctxCall', {
+      ctx: ctxId, method: 'accessor',
+      args: [name, options && typeof options.get === 'function' ? serializeValue(options.get) : null],
+    }),
     // cordis 语义:effect body 立即执行,把产出的 disposer 交给 Java(生命周期归 Java fiber)。
-    // 支持 generator body(ScopedLayers.effect / sessionProjections.register 用):步进到首个
-    // yield,注册 yield 出的 disposer;disposal 时先跑 disposer 再 resume generator 尾部。
-    // 旧桥把 body 整体延后到 unload,generator 永远不跑 —— 无法支撑真实 dsh 注册表(表写入
-    // 在 generator 首个 yield 前),故改为立即步进。
+    // 支持 generator body(fiber.ts:60-80,374-381:generator effect 立即跑到完成,逐个 yield
+    // 的 disposer 全部登记;disposal 时逆序执行)。这使 AgentRegistry.register() 的
+    // `yield enter(...); announce(agent)` 在登记时真正 announce —— 旧桥只步进到首个 yield,
+    // announce 被延后到 unload,agent/created 永不按 cordis 语义触发。
+    // Java 侧登记后返回一个 Java 持有的 disposer 服务句柄,worker 拿到后可直接 dispose()。
     effect: (body, label) => {
       const stepped = body()
-      let disposer
-      let resume
+      const disposers = []
       if (stepped && typeof stepped.next === 'function' && typeof stepped[Symbol.iterator] === 'function') {
         const iterator = stepped
-        const first = iterator.next()   // 运行 body 至首个 yield;重复名等错误在此抛给调用方
-        if (!first.done) {
-          if (typeof first.value === 'function') disposer = first.value
-          resume = () => { try { iterator.next() } catch (e) { /* generator 尾部不观察 */ } }
+        while (true) {
+          const result = iterator.next()
+          if (typeof result.value === 'function') disposers.push(result.value)
+          if (result.done) break
         }
       } else if (typeof stepped === 'function') {
-        disposer = stepped
+        disposers.push(stepped)
       }
-      if (typeof disposer !== 'function') return undefined
+      if (disposers.length === 0) return undefined
       const registered = serializeValue(() => {
-        let result
-        try { result = disposer() } finally { if (resume) resume() }
-        return result
+        let lastResult
+        for (let i = disposers.length - 1; i >= 0; i--) {
+          try { lastResult = disposers[i]() } catch (e) { /* 单个 disposer 失败不阻断逆序链 */ }
+        }
+        return lastResult
       })
       return bridgeCall('ctxCall', { ctx: ctxId, method: 'effect', args: [registered] })
     },
@@ -200,10 +218,46 @@ function makeCtx(ctxId) {
       if (result && typeof result.then === 'function') result = syncWaitPromise(result, 'waterfall ' + name)
       return result
     },
-    logger: () => ({ error: () => {}, info: () => {}, warn: () => {}, debug: () => {} }),
+    // serial(cordis events.serial):按序折叠 JS listener,首个 bail 值停下(dispatch.ts 的
+    // agentEvents.serial 用它)。Java 原生 listener 混入 → Java 侧抛明确错误(记 NEEDS)。
+    serial: (target, name, ...args) => {
+      const plan = bridgeCall('ctxCall', { ctx: ctxId, method: 'eventsDispatch', args: [serializeValue(target), 'serial', name, args.map(x => serializeValue(x))] })
+      const listeners = Array.isArray(plan) ? plan : []
+      for (const fn of listeners) {
+        let result = fn.apply(target, args)
+        if (result && typeof result.then === 'function') result = syncWaitPromise(result, 'serial listener ' + name)
+        if (result != null && result !== false) return result
+      }
+      return undefined
+    },
+    // events.dispatch(type, args):cordis Events.dispatch 的桥面(events.ts:150-163)。首个
+    // object/function 元素是 dispatch thisArg(carrier),第二个是事件名,其余是事件参数。
+    // Java 解析监听器:JS listener → 返回 fn 句柄(worker 本地折叠);Java-native listener →
+    // emit 模式由 Java 就地调用并收纳错误(非 emit 模式混入 Java listener → 明确 NEEDS)。
+    // 就地裁剪 caller 的 args(cordis 也 mutate args;AgentRegistry.announce() 用裁剪后的
+    // args 调 callback)。
+    events: {
+      dispatch: (mode, args) => {
+        const local = Array.from(args)
+        let thisArg = local.length > 0 && (typeof local[0] === 'object' || typeof local[0] === 'function')
+          ? local.shift() : null
+        const name = local.shift()
+        const plan = bridgeCall('ctxCall', {
+          ctx: ctxId, method: 'eventsDispatch',
+          args: [serializeValue(thisArg), mode, name, local.map(x => serializeValue(x))],
+        })
+        args.length = 0
+        args.push(...local)
+        const handles = Array.isArray(plan) ? plan : []
+        return handles.map(fn => function () { return fn.apply(thisArg, arguments) })
+      },
+    },
+    logger,
     i18n: { define: () => {} },
     bots: { find: () => null },
   }
+  // fiber seam 非可枚举(自引用链不能被 serializeValue 扫到);ctx.fiber 经 Proxy get 仍可达。
+  Object.defineProperty(ctx, 'fiber', { value: rootFiber, enumerable: false, writable: true, configurable: true })
   // command DSL(与 ctx.js installCommand 同语义;注册走 ctxCall)
   const registry = {
     register: (name, argDef, options, action) =>
@@ -360,18 +414,19 @@ function handleRequest(msg) {
 // ---- 主循环:同步处理 Java 请求;先消化嵌套期间入队的消息 ----
 let closing = false
 for (;;) {
-  let line
-  if (deferred.length > 0) {
-    line = deferred.shift()
-  } else {
-    line = readLine()
-  }
+  // deferred 队列存的是 bridgeCall 已解析的消息对象(嵌套期间 Java 并发发来的请求);
+  // 直接作为 msg 处理,不再 JSON.parse(对对象 parse 会失败 → 'malformed json')。
   let msg
-  try {
-    msg = JSON.parse(line)
-  } catch (e) {
-    send({ type: 'error', message: 'malformed json' })
-    continue
+  if (deferred.length > 0) {
+    msg = deferred.shift()
+  } else {
+    const line = readLine()
+    try {
+      msg = JSON.parse(line)
+    } catch (e) {
+      send({ type: 'error', message: 'malformed json' })
+      continue
+    }
   }
   // 防御:迟到/多余的响应(正常不会出现)直接丢弃
   if (msg.type === 'result' || msg.type === 'error' || msg.type === 'ctxResult') continue

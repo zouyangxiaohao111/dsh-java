@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.NullNode;
 import dev.dsh.cordis.Context;
 import dev.dsh.cordis.Events;
 import dev.dsh.cordis.Inject;
+import dev.dsh.cordis.Reflect;
 import dev.dsh.cordis.util.Disposable;
 
 import java.util.ArrayList;
@@ -65,6 +66,10 @@ public final class NodeWorkerBridge {
                 return doInject(args);
             case "effect":
                 return doEffect(args);
+            case "accessor":
+                return doAccessor(args);
+            case "eventsDispatch":
+                return doEventsDispatch(args);
             case "waterfallPlan":
                 return doWaterfallPlan(args);
             case "commandRegister":
@@ -155,14 +160,76 @@ public final class NodeWorkerBridge {
         return NullNode.instance;
     }
 
+    /**
+     * 登记 worker 发来的 effect disposer(fn 句柄),返回一个 Java 持有的 disposer 服务句柄:
+     * worker 侧 `ctx.effect(...)` 的调用方(如 AgentRegistry.register 的调用方)拿到它后可直接
+     * `dispose()` 触发卸载,不必等 Java fiber 回收。disposer 经 {@code invokeListener} 调用 ——
+     * 非 reader 线程阻塞等结果(Java fiber 卸载路径),reader 线程 fire-and-forget(worker 发起的
+     * dispose 路径,避免与 worker 嵌套等待死锁)。
+     */
     private JsonNode doEffect(JsonNode args) {
         NodeRef disposer = fnRef(args.get(0));
-        ctx.effect(() -> (Disposable) () -> {
-            host.invokeFn(disposer, List.of());
-            host.releaseFn(disposer);   // disposer 只跑一次(卸载时),跑完即回收句柄
+        Disposable javaDisposable = ctx.effect(() -> (Disposable) () -> {
+            host.invokeListener(disposer, new Object[0]);
+            host.releaseFn(disposer);   // disposer 只跑一次,跑完即回收句柄
             return CompletableFuture.completedFuture(null);
         }, "node-js-effect");
+        // svc 句柄:worker 经 invokeService 反射调用其 dispose()。
+        return host.toJsonNode(javaDisposable);
+    }
+
+    /** 注册一个 computed ctx property;get 经 JS 句柄调用(结果丢弃)。读取该属性时返回 JS
+     *  {@code undefined} 哨兵(cordis 的 accessor 未定义默认值;AgentRegistry 读
+     *  {@code this.ctx.agent} 需得到 undefined,使 {@code enter(agent, undefined)} 的 owner
+     *  = undefined → {@code roots()} 命中)。get 返回真实值需同步往返 → 记 NEEDS。 */
+    private JsonNode doAccessor(JsonNode args) {
+        String name = args.get(0).asText("");
+        NodeRef get = args.size() > 1 ? fnOrNull(args.get(1)) : null;
+        ctx.accessor(name, new Reflect.Property.Accessor(
+                (c, receiver) -> {
+                    if (get != null) host.invokeListener(get, new Object[0]);
+                    return NodeWorkerJsHost.UNDEFINED;
+                },
+                null));
         return NullNode.instance;
+    }
+
+    /**
+     * Worker 发起的 {@code events.dispatch(mode, args)}(AgentRegistry.announce/emitDisposed 与
+     * agentEvents.emit 走这里):Java 解析该事件收纳的监听器 —— JS listener 返回 fn 句柄
+     * (worker 本地折叠),Java-native listener 在 {@code emit} 模式下就地调用并收纳错误
+     * (纯 Java、非阻塞;顺序上 Java 先、JS 后,桥偏差,记 NOTE)。非 emit 模式混入 Java
+     * native listener 无法同步折叠 → 明确错误(记 NEEDS,与 waterfallPlan 一致)。
+     * 监听器 context filter 近似为无过滤(worker 侧 target 载体序列化后仅余空对象)。
+     */
+    private JsonNode doEventsDispatch(JsonNode args) {
+        String mode = args.get(1).asText("");
+        String name = args.get(2).asText("");
+        List<Events.Listener> listeners = ctx.events.listenersFor(name, null);
+        List<NodeRef> refs = new ArrayList<>(listeners.size());
+        for (Events.Listener l : listeners) {
+            if (l instanceof JsListener js) {
+                refs.add(js.ref);
+            } else if ("emit".equals(mode)) {
+                Object[] evArgs = toEventArgs(args.get(3));
+                try {
+                    Object returned = l.call(null, evArgs);
+                    if (returned instanceof CompletableFuture<?> cf) {
+                        cf.handle((v, t) -> {
+                            if (t != null) ctx.logger().warn("agent event \"" + name + "\" listener rejected: " + t);
+                            return null;
+                        });
+                    }
+                } catch (Throwable t) {
+                    ctx.logger().warn("agent event \"" + name + "\" listener threw: " + t);
+                }
+            } else {
+                throw new NodeBridgeError("event '" + name + "' has a Java-native listener; "
+                        + "the sync NodeWorkerJsHost can only fold JS listener chains for '" + mode
+                        + "' (NEEDS: worker-initiated " + mode + " over mixed listeners)");
+            }
+        }
+        return host.toJsonArray(refs);
     }
 
     private JsonNode doCommandRegister(JsonNode args) {
@@ -211,6 +278,22 @@ public final class NodeWorkerBridge {
             throw new NodeBridgeError("expected function handle in ctxCall, got " + node);
         }
         return ref;
+    }
+
+    /** 返回 fn 句柄或 null(可选参数位,如 accessor 的 get)。 */
+    private NodeRef fnOrNull(JsonNode node) {
+        if (node == null || node.isNull()) return null;
+        Object v = host.fromJsonNode(node);
+        if (v instanceof NodeRef ref && "fn".equals(ref.kind())) return ref;
+        return null;
+    }
+
+    /** 事件参数数组:worker 序列化的 {@code [arg0, arg1, ...]}(含 fn/svc 句柄反序列化)。 */
+    private Object[] toEventArgs(JsonNode arr) {
+        int n = arr != null && arr.isArray() ? arr.size() : 0;
+        Object[] out = new Object[n];
+        for (int i = 0; i < n; i++) out[i] = host.fromJsonNode(arr.get(i));
+        return out;
     }
 
     private static Object exposeService(Object svc) {

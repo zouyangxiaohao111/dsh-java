@@ -64,8 +64,10 @@ class AgentFusionOverlayTest {
                 assertThat(probeObj).isInstanceOf(Map.class);
                 Map<String, Object> probe = map(probeObj);
 
-                // 1. @deepseek-ai/cordis — the shim (Service / Context).
-                assertThat(probe.get("cordis")).asList().containsExactlyInAnyOrder("Context", "Service");
+                // 1. @deepseek-ai/cordis — the shim (Service / Context, plus the surface the
+                //    @deepseek-ai/dsh-agent overlay needs: FiberState / getTraceable / symbols).
+                assertThat(probe.get("cordis")).asList()
+                        .containsExactlyInAnyOrder("Context", "Service", "FiberState", "getTraceable", "symbols");
                 // 2. @deepseek-ai/dsh-llm — root + /message (real isTokenDelta runs).
                 assertThat(((Number) probe.get("llmExports")).longValue()).isGreaterThan(5);
                 assertThat(probe.get("llmMessageHasTokenDelta")).isEqualTo(true);
