@@ -156,6 +156,31 @@ class DshCliTest {
         assertThat(runCaptured(args("--version"))).contains("dshj " + DshCli.VERSION);
     }
 
+    // ---- M6-5a web 状态页端口解析 ----
+
+    @Test
+    void parsePortDefaultsTo8080() {
+        assertThat(DshCli.parsePort(List.of())).isEqualTo(DshCli.DEFAULT_WEB_PORT);
+        assertThat(DshCli.parsePort(null)).isEqualTo(DshCli.DEFAULT_WEB_PORT);
+        assertThat(DshCli.parsePort(List.of("open", "the", "dashboard"))).isEqualTo(DshCli.DEFAULT_WEB_PORT);
+    }
+
+    @Test
+    void parsePortHonorsPortFlag() {
+        assertThat(DshCli.parsePort(List.of("--port", "9000"))).isEqualTo(9000);
+        assertThat(DshCli.parsePort(List.of("--port=9001"))).isEqualTo(9001);
+        assertThat(DshCli.parsePort(List.of("--resume", "abc", "--port", "9100"))).isEqualTo(9100);
+    }
+
+    @Test
+    void parsePortIgnoresInvalidValues() {
+        assertThat(DshCli.parsePort(List.of("--port", "abc"))).isEqualTo(DshCli.DEFAULT_WEB_PORT);
+        assertThat(DshCli.parsePort(List.of("--port", "0"))).isEqualTo(DshCli.DEFAULT_WEB_PORT);
+        assertThat(DshCli.parsePort(List.of("--port", "-1"))).isEqualTo(DshCli.DEFAULT_WEB_PORT);
+        assertThat(DshCli.parsePort(List.of("--port", "70000"))).isEqualTo(DshCli.DEFAULT_WEB_PORT);
+        assertThat(DshCli.parsePort(List.of("--port"))).isEqualTo(DshCli.DEFAULT_WEB_PORT);
+    }
+
     @Test
     void runPluginAddJsSidePromptsRealDsh() {
         String out = runCaptured(args("plugin", "--profile", "web", "add", "@koishijs/plugin-echo"));

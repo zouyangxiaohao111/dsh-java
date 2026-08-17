@@ -1,5 +1,6 @@
 package dev.dsh.host.cli;
 
+import java.io.IOException;
 import java.io.PrintStream;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -36,6 +37,10 @@ public final class DshCli {
             App arguments after the launcher flags reach the booted profile:
               dshj --profile headless "run the tests"
               dshj web "open the dashboard"
+
+            Web status page (M6-5a): 'dshj web boot' serves an HTML status page at
+              http://127.0.0.1:8080/  (--port <n> overrides the port). It shows the
+              loaded plugins, their host, the bridge base, and the startup log.
 
             Plugins (plugin add <spec>):
               jar:<path|coords>     external Java jar plugin (install: M6-7)
@@ -88,22 +93,44 @@ public final class DshCli {
         };
     }
 
-    /** boot 一个 profile:加载插件树 → 打印概览 → 阻塞运行(Ctrl+C 卸载)。 */
+    /** web HTTP 状态页默认端口(M6-5a;{@code --port <n>} 覆盖)。 */
+    static final int DEFAULT_WEB_PORT = 8080;
+
+    /** boot 一个 profile:加载插件树 → 打印概览 → 阻塞运行(Ctrl+C 卸载)。
+     *  web profile 额外启动 HTTP 状态页(M6-5a),浏览器打开即可看到 harness/profile/
+     *  已加载插件/桥基址/启动日志。 */
     private static int runBoot(String profile, List<String> appArgs, PrintStream out, PrintStream err) {
         ProfileBoot boot = new ProfileBoot();
         try {
             ProfileBoot.Handle handle = boot.bootOnce(profile, out);
             out.println();
             out.println("dshj: profile '" + profile + "' is running on the Java harness. Ctrl+C to stop.");
+            WebStatusServer server = null;
+            if ("web".equals(profile)) {
+                int port = parsePort(appArgs);
+                try {
+                    server = new WebStatusServer(profile, handle, port);
+                    server.start();
+                    out.println("dshj: web status page at http://127.0.0.1:" + server.port() + "/");
+                } catch (IOException e) {
+                    out.println("dshj: web status server failed to start on port " + port + ": "
+                            + e.getMessage());
+                }
+            }
             if (!appArgs.isEmpty()) {
                 out.println("dshj: app args passed to the profile: " + appArgs);
             }
+            WebStatusServer srv = server;
             CountDownLatch latch = new CountDownLatch(1);
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try {
-                    handle.close();
+                    if (srv != null) srv.close();
                 } finally {
-                    latch.countDown();
+                    try {
+                        handle.close();
+                    } finally {
+                        latch.countDown();
+                    }
                 }
             }, "dshj-shutdown"));
             latch.await();
@@ -115,5 +142,31 @@ public final class DshCli {
             err.println("dshj: " + e.getMessage());
             return 1;
         }
+    }
+
+    /**
+     * 从 boot 的 app 参数里解析 web 状态页端口:{@code --port <n>} / {@code --port=<n>},
+     * 非法或缺失回退 {@link #DEFAULT_WEB_PORT}。解析值不拦截 —— app 参数原样交给 profile。
+     */
+    static int parsePort(List<String> appArgs) {
+        if (appArgs == null) return DEFAULT_WEB_PORT;
+        for (int i = 0; i < appArgs.size(); i++) {
+            String a = appArgs.get(i);
+            String value = null;
+            if ("--port".equals(a) && i + 1 < appArgs.size()) {
+                value = appArgs.get(i + 1);
+            } else if (a.startsWith("--port=")) {
+                value = a.substring("--port=".length());
+            }
+            if (value != null) {
+                try {
+                    int p = Integer.parseInt(value.trim());
+                    if (p > 0 && p < 65536) return p;
+                } catch (NumberFormatException ignored) {
+                    // 非法端口 → 回退默认
+                }
+            }
+        }
+        return DEFAULT_WEB_PORT;
     }
 }
