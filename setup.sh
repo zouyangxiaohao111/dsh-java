@@ -4,9 +4,9 @@
 # 目标:clone → setup → run。
 #   1. git submodule update --init --depth 1     拉取 vendor/dsh(deepseek-harness 真源);
 #   2. pnpm install(经 corepack 锁 pnpm@11.7.0)  安装 dsh workspace 依赖 → vendor/dsh/node_modules;
-#   3. 核查 dsh 插件解析方式并补齐构建:读 package.json main/bin 字段(已核实:dsh 包
-#      exports/main → lib/ 构建产物,源码 src/ 不能直接 require)→ 需要一次 lib 构建
-#      (pnpm build:lib:host 只构建宿主侧,不含 web 前端)。
+#   3. build:lib:host(tsc -b + tsdown)            构建 dsh 包 lib/(exports/main → lib/,src/ 不能直接跑)。
+#      M6-5c 实测:pnpm 跑 script 前的 install 预检会被 lefthook postinstall 阻断,用
+#      --config.verify-deps-before-run=false 跳过;失败时兜底 scripts/strip-dsh-libs.mjs。
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,29 +34,42 @@ run_pnpm() {
 run_pnpm --version >/dev/null
 
 echo "[dshj setup] 3/4 安装 dsh workspace 依赖(vendor/dsh/node_modules)..."
-run_pnpm install
+if ! run_pnpm install; then
+  # 根 postinstall(lefthook git-hook 安装)在子模块 worktree 配置下必失败 —— 非阻塞:
+  # deps 已全部装好(node_modules 就位),仅 git-hook 没挂上,不影响构建与运行。
+  # M6-5c 实测:lockfile 校验通过、deps "Already up to date",唯根 postinstall 报错。
+  if [ -d vendor/dsh/node_modules/@deepseek-ai ]; then
+    echo "[dshj setup] 注意: pnpm install 根 postinstall(lefthook)失败 —— 非阻塞,继续。"
+    echo "  (子模块无法 enable extensions.worktreeConfig;deps 已装好,git-hook 非运行依赖)"
+  else
+    echo "[dshj setup] 错误: pnpm install 失败且 node_modules 未就位。"
+    exit 1
+  fi
+fi
 
-echo "[dshj setup] 4/4 核查 dsh 插件解析方式(lib/ 构建产物)..."
-# dsh 包按 exports/main → lib/ 解析(构建产物),src/ 不能直接跑。M6-5b web profile 需要
-# system-prompt 闭包(cosmokit/schemastery/dsh-scope/system-prompt)的 lib。缺失时用
-# scripts/strip-dsh-libs.mjs 对该最小闭包做 type-strip 构建(复用 M4/M5 验证过的手段;
-# 产物写入 vendor/dsh 各包的 lib/,被子模块 .gitignore 忽略,不弄脏 submodule)。
-# 注:整仓 `pnpm build:lib:host`(tsc -b + tsdown)是 dsh 原生完整构建,但在本机子模块环境
-# 下会被 lefthook postinstall 与 typret lib 依赖阻断 —— strip 脚本是该场景的可靠替代。
-SYS_LIB="vendor/dsh/packages/core/system-prompt/lib/index.js"
-if [ -f "$SYS_LIB" ]; then
-  echo "[dshj setup] dsh 插件 lib 已构建,可直接解析。"
-else
-  echo "[dshj setup] system-prompt lib 缺失 —— 运行 scripts/strip-dsh-libs.mjs(type-strip 最小闭包)..."
+echo "[dshj setup] 4/4 构建 dsh host lib(pnpm build:lib:host)..."
+# dsh 包按 exports/main → lib/ 解析(构建产物),src/ 不能直接跑。走 dsh 原生完整构建
+# `tsc -b tsconfig.host.json && tsdown`(M6-5c 实测 exit 0,lib/ 全量产物;*tsbuildinfo
+# 与 lib/ 都被 vendor/dsh/.gitignore 忽略,子模块不被弄脏)。
+# 注:pnpm 默认跑 script 前会重跑一次 install 预检(deps status check),被 lefthook
+# postinstall 阻断 → 用 --config.verify-deps-before-run=false 跳过预检(deps 上一步已就位)。
+if ! run_pnpm --config.verify-deps-before-run=false build:lib:host; then
+  echo "[dshj setup] build:lib:host 失败 —— 回退 scripts/strip-dsh-libs.mjs(type-strip 最小闭包)..."
   node "$DIR/scripts/strip-dsh-libs.mjs" || {
-    echo "[dshj setup] 错误: strip-dsh-libs.mjs 失败。备选: 在 vendor/dsh 里跑"
-    echo "  pnpm build:lib:host(需先解决 lefthook postinstall / typret 前置)。"
+    echo "[dshj setup] 错误: strip-dsh-libs.mjs 失败。"
     exit 1
   }
+fi
+SYS_LIB="vendor/dsh/packages/core/system-prompt/lib/index.js"
+if [ -f "$SYS_LIB" ]; then
+  echo "[dshj setup] system-prompt lib 就位,web profile 可经桥加载。"
+else
+  echo "[dshj setup] 错误: 构建后 system-prompt lib 仍缺失($SYS_LIB)。"
+  exit 1
 fi
 
 echo
 echo "[dshj setup] 完成。接下来:"
 echo "  ./dshj --help                        # CLI 帮助(web/headless/cli 任意 profile)"
-echo "  ./dshj web boot                      # boot 默认 web profile(Java harness;dsh 完整 web 是 M6-5)"
-echo "  ./dshj plugin --profile web add <spec>  # 插件 add 骨架(真正安装是 M6-7)"
+echo "  ./dshj web boot                      # boot 默认 web profile(Java+Node 混排),起 :8080 状态页"
+echo "  ./dshj plugin --profile web add <spec>  # 插件 add(安装 M6-7)"

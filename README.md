@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/JDK-25-0080FF?style=flat&logo=openjdk&logoColor=white" alt="JDK 25">
   <img src="https://img.shields.io/badge/构建-Gradle%209.7-02303A?style=flat&logo=gradle&logoColor=white" alt="Gradle 9.7">
-  <img src="https://img.shields.io/badge/测试-43%20全绿-2EA44F?style=flat" alt="43 tests green">
+  <img src="https://img.shields.io/badge/测试-274%20全绿-2EA44F?style=flat" alt="274 tests green">
   <img src="https://img.shields.io/badge/GraalJS-24.1-3DDC84?style=flat" alt="GraalJS">
   <img src="https://img.shields.io/badge/license-MIT-2EA44F?style=flat" alt="MIT License">
 </p>
@@ -59,13 +59,23 @@ dsh-java 用 JDK 25 把这套语义**忠实复刻成 Java**,再架一座 JS 桥,
   </tr>
 </table>
 
-## 快速开始
+## 快速开始(clone → setup → run)
 
 ```sh
 git clone https://github.com/zouyangxiaohao111/dsh-java.git
 cd dsh-java
-./gradlew test          # 43+ 测试全绿
+./setup.sh           # ① 拉 vendor/dsh 子模块 → ② pnpm install(deps) → ③ build:lib:host(host lib)
+./gradlew test       # 274 测试全绿
+./dshj web boot      # boot 默认 web profile → 打开 http://127.0.0.1:8080/
 ```
+
+`./setup.sh` 三步体验(M6-5c 实测,exit 0):
+
+| 步 | 做什么 | 实测结果 |
+|---|---|---|
+| ① | `git submodule update --init` 拉 `vendor/dsh`(deepseek-harness 真源,dsh-v0.1.0-rc.7) | ✅ |
+| ② | `corepack pnpm install` 装 dsh workspace 依赖(锁 pnpm@11.7.0) | ✅ deps 就位;根 postinstall(lefthook git-hook)在子模块环境失败 = **非阻塞**(不装 git-hook 不影响构建/运行) |
+| ③ | `corepack pnpm --config.verify-deps-before-run=false build:lib:host` 构建 host lib(tsc -b + tsdown) | ✅ exit 0,207 包构建完成;system-prompt lib 就位 |
 
 > **前置依赖**:③ Node worker 宿主(ESM / native / 重 Node 插件)需要系统有 `node` 可执行
 > (可通过环境变量 `NODE` 指定路径)。无 Node 时依赖它的测试会被 JUnit Assumption 自动
@@ -74,19 +84,22 @@ cd dsh-java
 ## CLI(`./dshj`)+ 链接 dsh 真源(M6)
 
 ```sh
-git submodule update --init --depth 1   # 或 ./setup.sh(vendor/dsh = deepseek-harness 真源)
 ./dshj --help                            # 帮助(web/headless/cli 任意 profile)
-./dshj web boot                          # boot 默认 web profile(Java harness)
+./dshj web boot                          # boot 默认 web profile(Java+Node 混排),起 :8080 状态页
 ./dshj --profile headless boot           # 指定 profile
 ./dshj plugin --profile web add <spec>   # 插件 add:jar:<maven/路径> 从 MavenLocal/Central 装;
                                         #   java:<目录|github:|git+> 装源码(JS 侧走真实 dsh plugin add)
 ```
 
 - `profiles/<name>/cordis.yml` 声明插件集;`$DSH_HOME` 可覆盖 profile 根(镜像 dsh)。
-- `./setup.sh` 一次性初始化:拉取 `vendor/dsh` 子模块 → `pnpm install`(corepack 锁
-  `pnpm@11.7.0`)→ 构建 system-prompt 闭包的 lib(`scripts/strip-dsh-libs.mjs`,type-strip
-  最小闭包;整仓 `build:lib:host` 在子模块环境会被 lefthook/typret 前置阻断)。目标是
-  **clone → setup → run**。
+- `./dshj web boot` 的 HTTP 状态页(`http://127.0.0.1:8080/`,`--port` 可覆盖)显示:
+  harness 名 + 已加载插件列表(Java/Node/GraalJS 宿主标签)+ 桥基址 + 启动日志
+  (M6-5a)。web profile 混排 Java 插件(`counter[JAVA]`)与真实 dsh 插件
+  (`@deepseek-ai/dsh-system-prompt[NODE]`,经桥注册 `ctx.systemPrompt` 进 Java 核心, M6-5b)。
+- `./setup.sh` 一次性初始化,目标是 **clone → setup → run**。`pnpm install` 的 lefthook
+  postinstall 失败非阻塞;`build:lib:host` 需 `--config.verify-deps-before-run=false`
+  跳过 pnpm 的 install 预检(该预检会被 lefthook postinstall 阻断;tsc/tsdown 本身无碍,
+  M6-5c 实测 exit 0)。兜底 `scripts/strip-dsh-libs.mjs` 仅构建 system-prompt 最小闭包。
 - Node worker 把 `vendor/dsh/node_modules` + profile `node_modules` 作为裸模块解析基址
   (bareModuleBaseUrl 等价物,`NodeWorkerJsHost` 的 `moduleBases` seam);真实 dsh 插件的
   `@deepseek-ai/cordis` import 被 bridge 的 resolve 钩子拦到 Java 桥 shim(M6-5b),其余

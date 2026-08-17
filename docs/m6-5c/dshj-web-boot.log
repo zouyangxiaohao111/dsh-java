@@ -1,0 +1,7 @@
+dshj: profile 'web' booted (D:\code\dsh-java\profiles\web\cordis.yml):
+  - counter  [JAVA]  dev.dsh.demo.CounterPlugin
+  - system-prompt  [NODE]  ../../vendor/dsh/packages/core/system-prompt
+dshj: node module bases: [D:\code\dsh-java\vendor\dsh\node_modules]
+
+dshj: profile 'web' is running on the Java harness. Ctrl+C to stop.
+dshj: web status page at http://127.0.0.1:8080/
