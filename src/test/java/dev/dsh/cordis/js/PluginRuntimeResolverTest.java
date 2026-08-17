@@ -175,9 +175,12 @@ class PluginRuntimeResolverTest {
         assertThat(resolver.detect(javaFile)).isEqualTo(HostKind.JAVA);
     }
 
-    /** TLA / macrotask 限制:resolver 明确失败上报(可执行建议),而非模糊的超时/崩溃。 */
+    /**
+     * TLA 模块经 resolver 加载并运行:异步 worker 可 await 动态 import() 的 top-level await
+     * (原"TLA 限制"上报路径已解除;验证整体加载链仍工作)。
+     */
     @Test
-    void loadJsReportsAsyncLimitClearly() throws Exception {
+    void loadJsRunsTopLevelAwaitModule() throws Exception {
         NodeEnv.assumeNode();
         Path dir = tmp.resolve("tla");
         Files.createDirectories(dir);
@@ -185,14 +188,24 @@ class PluginRuntimeResolverTest {
         Files.writeString(dir.resolve("index.js"), """
                 export const name = 'tla'
                 await Promise.resolve()
-                export function apply(ctx, config) {}
+                export function apply(ctx, config) {
+                  ctx.on('go', () => { ctx.emit('done', 'tla-ok'); });
+                }
                 """);
         PluginRuntimeResolver resolver = new PluginRuntimeResolver();
         assertThat(resolver.detect(dir.resolve("index.js"))).isEqualTo(HostKind.NODE);
-        assertThatThrownBy(() -> resolver.loadJs(dir.resolve("index.js")))
-                .isInstanceOf(NodeBridgeError.class)
-                .hasMessageContaining("cannot run on NodeWorkerJsHost")
-                .hasMessageContaining("top-level");
+
+        Context root = new Context();
+        AtomicReference<String> got = new AtomicReference<>();
+        root.on("done", (c, args) -> { got.set(String.valueOf(args[0])); return null; });
+
+        try (ResolvedJsPlugin r = resolver.loadJs(dir.resolve("index.js"))) {
+            assertThat(r.kind()).isEqualTo(HostKind.NODE);
+            root.plugin(r.adapter(), null);
+            root.emit("go");
+            assertThat(got.get()).isEqualTo("tla-ok");
+        }
+        root.fiber.dispose().join();
     }
 
     // ---- 运行时兜底 ----

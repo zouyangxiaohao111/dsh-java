@@ -617,6 +617,10 @@ public final class NodeWorkerJsHost implements JsHost {
                     node.put("id", seq.getAndIncrement());
                     write(node.toString());
                 } catch (NodeBridgeError ignored) { }
+                // 关闭 worker stdin:worker 的 reader 线程阻塞在 fs.readSync 读 stdin,
+                // 收到 EOF 才退出(Windows 上进程仍存活时 process.exit 会挂起)。关闭写端
+                // 使 reader 得 EOF → worker 干净退出,close 不必等 destroyForcibly。
+                closeWorkerStdin();
                 // 给 worker 一个退出窗口,然后强制回收
                 if (!process.waitFor(2, TimeUnit.SECONDS)) process.destroyForcibly();
                 else process.destroy();
@@ -628,5 +632,16 @@ public final class NodeWorkerJsHost implements JsHost {
         services.clear();
         bridges.clear();
         failAllPending("node worker closed");
+    }
+
+    /** 关闭 worker 的 stdin(与 write 同锁,避免并发写途中关闭)。 */
+    private void closeWorkerStdin() {
+        synchronized (stdin) {
+            try {
+                stdin.close();
+            } catch (IOException ignored) {
+                // worker 已死 / 已关闭:忽略
+            }
+        }
     }
 }

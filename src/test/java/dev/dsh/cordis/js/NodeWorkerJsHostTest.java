@@ -141,24 +141,37 @@ class NodeWorkerJsHostTest {
         root.fiber.dispose().join();
     }
 
-    /** 模块用 top-level await(TLA)→ 同步宿主无法 await,失败上报为明确错误(不挂死、不崩溃)。 */
+    /**
+     * ESM top-level await(TLA)→ 异步 worker 可经动态 import() await,模块正常加载并运行
+     * (原同步宿主限制已解除;TLA settle 后才 apply,插件可依赖 TLA 阶段的副作用)。
+     */
     @Test
-    void topLevelAwaitModuleFailsCleanlyWithClearError() throws Exception {
+    void topLevelAwaitModuleLoadsAndRuns() throws Exception {
         Path plugin = tmp.resolve("tla-plugin");
         Files.createDirectories(plugin);
         Files.writeString(plugin.resolve("package.json"), "{\"type\":\"module\"}");
         Files.writeString(plugin.resolve("index.js"), """
                 export const name = 'tla'
-                await Promise.resolve()
-                export function apply(ctx, config) {}
+                let settled = false
+                await new Promise((resolve) => setTimeout(resolve, 10))
+                settled = true
+                export function apply(ctx, config) {
+                  ctx.on('go', () => { ctx.emit('done', settled ? 'tla-settled' : 'tla-early'); });
+                }
                 """);
-        try (NodeWorkerJsHost host = new NodeWorkerJsHost()) {
-            assertThatThrownBy(() -> host.loadModule(plugin.resolve("index.js")))
-                    .isInstanceOf(NodeBridgeError.class)
-                    .hasMessageContaining("top-level await");
-            // 宿主仍存活:后续请求正常(失败不拖垮整个 worker)
+        Context root = new Context();
+        AtomicReference<String> got = new AtomicReference<>();
+        root.on("done", (c, args) -> { got.set(String.valueOf(args[0])); return null; });
+        try (JsHost host = new NodeWorkerJsHost()) {
+            JsPluginAdapter adapter = new JsPluginAdapter(host, host.loadModule(plugin.resolve("index.js")));
+            assertThat(adapter.name()).isEqualTo("tla");
+            root.plugin(adapter, null);
+            root.emit("go");
+            assertThat(got.get()).isEqualTo("tla-settled");
+            // 宿主仍存活:后续请求正常
             host.loadModule(writePlugin("ok.cjs", "module.exports = { apply(ctx) {} }"));
         }
+        root.fiber.dispose().join();
     }
 
     @Test
