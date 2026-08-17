@@ -16,6 +16,8 @@ import java.util.Locale;
  *
  * <pre>{@code
  *   source: java:dev.dsh.demo.CounterPlugin  → JAVA,类名
+ *   source: java:./P.java                     → JAVA,源码文件
+ *   source: jar:./plugins/x.jar               → JAVA,jar 插件(mainClass 可选)
  *   source: graaljs:./plugins/greeter         → GRAAL,路径
  *   source: node:./plugins/foo                → NODE,路径
  *   path: node_modules/@koishijs/plugin-echo  → 无前缀 → resolver.detect
@@ -88,10 +90,10 @@ public final class HostSelector {
             return new ResolvedEntry(entry, kind, false, ref, candidate);
         }
 
-        // 显式宿主:java: 类名不落盘;.java/.class 源落盘;js 路径落盘
+        // 显式宿主:java: 类名不落盘;.java/.class/.jar 源落盘;js 路径落盘
         if (kind == HostKind.JAVA) {
             String lower = ref.toLowerCase(Locale.ROOT);
-            Path abs = (lower.endsWith(".java") || lower.endsWith(".class"))
+            Path abs = (lower.endsWith(".java") || lower.endsWith(".class") || lower.endsWith(".jar"))
                     ? baseDir.resolve(ref).normalize()
                     : null;
             return new ResolvedEntry(entry, kind, true, ref, abs);
@@ -126,6 +128,7 @@ public final class HostSelector {
     private static HostKind prefixKind(String prefix) {
         return switch (prefix.toLowerCase(Locale.ROOT)) {
             case "java" -> HostKind.JAVA;
+            case "jar" -> HostKind.JAVA;   // jar 插件也是 Java 宿主(mainClass/扫描发现)
             case "node" -> HostKind.NODE;
             case "graaljs", "graal" -> HostKind.GRAAL;
             default -> null;

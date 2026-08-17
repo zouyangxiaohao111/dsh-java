@@ -16,9 +16,12 @@ import dev.dsh.cordis.reload.PluginCompiler;
 import dev.dsh.cordis.reload.UrlPluginClassLoaderFactory;
 
 import java.io.IOException;
+import java.lang.reflect.Modifier;
+import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -26,8 +29,12 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.ServiceConfigurationError;
+import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 
 /**
  * 配置驱动加载(design §2 PluginLoaderService):读 cordis.yml → 条目树 → 逐条注册进 registry。
@@ -254,25 +261,36 @@ public final class PluginLoaderService implements AutoCloseable {
         String ref = re.ref();
         Plugin<?> plugin;
         Path source = null;
+        ClassLoader cl = null;
         String lower = ref.toLowerCase(Locale.ROOT);
         if (re.abs() != null && lower.endsWith(".java")) {
             // 源码:编译 → 隔离 ClassLoader → 实例化(复用 M3 PluginCompiler + PluginClassLoaderFactory)
             Path classesDir = compiler.compile(re.abs(),
                     outputDir.resolve(re.abs().getFileName().toString() + ".classes"));
-            ClassLoader cl = clFactory.create(List.of(classesDir), getClass().getClassLoader());
+            cl = clFactory.create(List.of(classesDir), getClass().getClassLoader());
             plugin = instantiate(cl, re.abs().getFileName().toString().replace(".java", ""));
             source = re.abs();
         } else if (re.abs() != null && lower.endsWith(".class")) {
             // .class 文件:以所在目录为 classpath 根,按路径推导类名
-            ClassLoader cl = clFactory.create(List.of(re.abs().getParent()), getClass().getClassLoader());
+            cl = clFactory.create(List.of(re.abs().getParent()), getClass().getClassLoader());
             plugin = instantiate(cl, classNameFromClassPath(re.abs()));
+            source = re.abs();
+        } else if (re.abs() != null && lower.endsWith(".jar")) {
+            // jar 插件(design §5.2):URLClassLoader([jar], parent=核心 CL) + 类发现
+            cl = clFactory.create(List.of(re.abs()), getClass().getClassLoader());
+            try {
+                plugin = instantiateFromJar(cl, entry, re.abs());
+            } catch (Exception e) {
+                closeQuietly(cl);
+                throw e;
+            }
             source = re.abs();
         } else {
             // 类名:从上下文 ClassLoader 按名加载
-            ClassLoader cl = clFactory.create(List.of(), Thread.currentThread().getContextClassLoader());
+            cl = clFactory.create(List.of(), Thread.currentThread().getContextClassLoader());
             plugin = instantiate(cl, ref);
         }
-        return new LoadedPlugin(entry, HostKind.JAVA, ref, plugin, null, source);
+        return new LoadedPlugin(entry, HostKind.JAVA, ref, plugin, null, source, cl);
     }
 
     private LoadedPlugin loadJs(Entry entry, ResolvedEntry re) throws Exception {
@@ -305,7 +323,7 @@ public final class PluginLoaderService implements AutoCloseable {
             host = r.host();
             adapter = r.adapter();
         }
-        return new LoadedPlugin(entry, kind, re.ref(), adapter, host, entryFile);
+        return new LoadedPlugin(entry, kind, re.ref(), adapter, host, entryFile, null);
     }
 
     // ---- 内部:diff / 替换 ----
@@ -419,6 +437,16 @@ public final class PluginLoaderService implements AutoCloseable {
         }
     }
 
+    /** 关闭刚创建的插件 ClassLoader 并吞掉关闭期异常(记日志)——jar 加载失败时释放文件句柄。 */
+    private void closeQuietly(ClassLoader cl) {
+        if (!(cl instanceof AutoCloseable ac)) return;
+        try {
+            ac.close();
+        } catch (Throwable t) {
+            ctx.logger().error(t);
+        }
+    }
+
     /** 卸载已注册句柄并吞掉卸载期异常(记日志),供注册/apply 失败清理使用 —— close 抛错不得掩盖根因异常。 */
     private static void quietlyUnregister(LoadedPlugin lp, Context ctx) {
         try {
@@ -473,6 +501,58 @@ public final class PluginLoaderService implements AutoCloseable {
             throw new IllegalStateException("not a Cordis plugin: " + className);
         }
         return (Plugin<?>) cls.getDeclaredConstructor().newInstance();
+    }
+
+    /**
+     * 从 jar 发现并实例化插件(design §5.2):{@code mainClass} 显式 &gt; ServiceLoader
+     * ({@code META-INF/services/dev.dsh.cordis.Plugin}) &gt; 扫描 {@code implements Plugin} 类。
+     *
+     * <p>扫描用 {@link Class#forName(String, boolean, ClassLoader)} 的 {@code initialize=false}
+     * 避免发现期触发静态初始化;无关/依赖缺失类(链接错误)跳过。
+     */
+    @SuppressWarnings("unchecked")
+    private static Plugin<?> instantiateFromJar(ClassLoader cl, Entry entry, Path jar) throws Exception {
+        String mainClass = entry.mainClass();
+        if (mainClass != null && !mainClass.isBlank()) {
+            return instantiate(cl, mainClass);
+        }
+        // ServiceLoader:jar 内 META-INF/services/dev.dsh.cordis.Plugin
+        try {
+            for (Plugin<?> p : ServiceLoader.load(Plugin.class, cl)) {
+                return p;
+            }
+        } catch (ServiceConfigurationError ignored) {
+            // 服务描述损坏/缺失 → 落到扫描
+        }
+        // 扫描 jar 条目
+        List<Class<?>> candidates = new ArrayList<>();
+        try (JarFile jf = new JarFile(jar.toFile())) {
+            Enumeration<JarEntry> en = jf.entries();
+            while (en.hasMoreElements()) {
+                String name = en.nextElement().getName();
+                if (!name.endsWith(".class")) continue;
+                if (name.startsWith("META-INF/") || name.contains("module-info")) continue;
+                String cn = name.substring(0, name.length() - ".class".length()).replace('/', '.');
+                try {
+                    Class<?> cls = Class.forName(cn, false, cl);
+                    if (Plugin.class.isAssignableFrom(cls) && !cls.isInterface()
+                            && !Modifier.isAbstract(cls.getModifiers())) {
+                        candidates.add(cls);
+                    }
+                } catch (ClassNotFoundException | LinkageError ignored) {
+                    // 无关类或依赖缺失(链接期,含 NoClassDefFoundError),跳过
+                }
+            }
+        }
+        if (candidates.isEmpty()) {
+            throw new IllegalStateException("no Cordis plugin found in jar: " + jar
+                    + " (declare mainClass or META-INF/services/dev.dsh.cordis.Plugin)");
+        }
+        if (candidates.size() > 1) {
+            throw new IllegalStateException("ambiguous plugins in jar: " + jar + " -> " + candidates
+                    + " (declare mainClass)");
+        }
+        return (Plugin<?>) candidates.get(0).getDeclaredConstructor().newInstance();
     }
 
     /** {@code foo/Bar.class} → {@code foo.Bar}(相对 classpath 根的包路径)。 */

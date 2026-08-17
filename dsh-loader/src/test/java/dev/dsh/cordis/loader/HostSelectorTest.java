@@ -121,6 +121,30 @@ class HostSelectorTest {
     }
 
     @Test
+    void jarPrefixYieldsJavaJarTarget() throws Exception {
+        Path jar = tmp.resolve("plugins").resolve("x.jar");
+        Files.createDirectories(jar.getParent());
+        Files.write(jar, new byte[0]);
+        HostSelector sel = new HostSelector();
+        ResolvedEntry re = sel.select(new Entry("p", "jar:./plugins/x.jar", null, null), tmp);
+        assertThat(re.kind()).isEqualTo(HostKind.JAVA);
+        assertThat(re.explicit()).isTrue();
+        assertThat(re.ref()).isEqualTo("./plugins/x.jar");
+        assertThat(re.abs()).isEqualTo(jar.toAbsolutePath().normalize());
+    }
+
+    @Test
+    void mainClassParsedFromYmlNode() throws Exception {
+        // Entry.parse 透传 mainClass(m6-design §5.2 jar 插件显式入口)
+        var yaml = new com.fasterxml.jackson.dataformat.yaml.YAMLFactory();
+        var node = new com.fasterxml.jackson.databind.ObjectMapper(yaml)
+                .readTree("name: p\nsource: jar:./plugins/x.jar\nmainClass: com.example.ExternalPlugin");
+        Entry e = Entry.parse(node);
+        assertThat(e.mainClass()).isEqualTo("com.example.ExternalPlugin");
+        assertThat(e.ref()).isEqualTo("jar:./plugins/x.jar");
+    }
+
+    @Test
     void missingTargetThrows() {
         HostSelector sel = new HostSelector();
         assertThatThrownBy(() -> sel.select(new Entry("p", null, null, null), tmp))
