@@ -38,8 +38,13 @@
  * <p><b>Honest boundaries (NEEDS)</b>: the {@code llm} seam streams canned
  * chunks from Java (no real adapter/streaming transport); the
  * {@code tools[TOOL_RUNTIME_SCHEDULER]} is a stub scheduler (no real executor
- * / registry / code runtime); {@code settings} resolves through an inert
- * {@code ctx.inject} (no real settings backend); the hybrid loopCtx keeps
+ * / registry / code runtime); {@code settings} is the REAL dsh-settings
+ * SettingsProvider when the driver config carries a {@code settingsPath} — the
+ * concrete provider reads the test configuration document and the real
+ * AgentLoop constructor's {@code installSettingsSection} registers the
+ * {@code agent-loop} namespace against it, so the machine's
+ * {@code config.maxParallelToolCalls} reflects the config value (M5 NEEDS #3;
+ * a file-watching / atomic-write provider is a further NEEDS); the hybrid loopCtx keeps
  * the real services worker-local because the bridge cannot carry live
  * prototype-bearing objects (a real cross-realm ctx with live services is a
  * NEEDS).
@@ -52,12 +57,15 @@
  * @module @dsh-java/agent-loop-driver
  */
 
+import { readFileSync } from 'node:fs'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionStore } from '@deepseek-ai/dsh-session'
+import { SettingsProvider, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { TOOL_RUNTIME_SCHEDULER } from '@deepseek-ai/dsh-tools'
+import z from '@deepseek-ai/schemastery'
 
 /** Cordis plugin name. */
 export const name = 'agent-loop-driver'
@@ -197,6 +205,37 @@ function makeLoopCtx(ctx, deps) {
       if (typeof pluginFn === 'function') pluginFn(child)
       return { ctx: child, dispose: () => Promise.resolve(), inertia: undefined }
     },
+    /**
+     * Worker-local {@code ctx.inject}: resolves deps from worker-local (hidden)
+     * service slots first, then the bridge get; fires the callback only when
+     * every dep is present (cordis gating). The scoped ctx hands the resolved
+     * services plus the minimal ctx surface the real dsh-settings
+     * {@code installSettingsSection} consumes ({@code effect}, {@code get}).
+     * With no settings provider mounted, {@code ['settings']} never resolves and
+     * the section wiring stays inert — exactly the pre-M5 behavior.
+     */
+    inject(deps, callback) {
+      const names = Array.isArray(deps) ? deps : Object.keys(deps || {})
+      const sctx = {}
+      let allPresent = true
+      for (const name of names) {
+        let value
+        if (Object.hasOwn(this, name)) {
+          value = this[name]
+        } else {
+          try { value = ctx.get(name) } catch (error) {
+            if (String(error && error.message).includes('without inject')) value = undefined
+            else throw error
+          }
+        }
+        if (value === undefined) { allPresent = false; break }
+        sctx[name] = value
+      }
+      if (!allPresent) return undefined
+      sctx.effect = (...args) => ctx.effect(...args)
+      sctx.get = (name) => this.get(name)
+      return callback(sctx)
+    },
   }
   /**
    * Hide a worker-local service slot. The services hold `this.ctx === loopCtx`,
@@ -259,6 +298,37 @@ function makeTools(toolsSvc) {
 }
 
 /**
+ * Concrete real-settings provider for this host: a JSON document read from the
+ * driver-configured test-config path, exposed through the real dsh-settings
+ * {@link SettingsProvider} service. Persists back into the in-memory document
+ * (reads are the assertion surface; a file-backed provider is a later NEEDS).
+ */
+class ConfigSettingsProvider extends SettingsProvider {
+  constructor(ctx, path, doc) {
+    super(ctx)
+    this.path = path
+    this.doc = structuredClone(doc)
+  }
+
+  get writable() {
+    return true
+  }
+
+  get documentPath() {
+    return this.path
+  }
+
+  load() {
+    return Promise.resolve(structuredClone(this.doc))
+  }
+
+  persist(ns, section) {
+    this.doc[ns] = structuredClone(section)
+    return Promise.resolve()
+  }
+}
+
+/**
  * Fuse the real agent-loop with the Java core: install the services, build the
  * hybrid loopCtx, create a live ReactLoopAgent, and expose turn/session probes.
  * @param ctx - registrant context (bridge proxy back to the Java core).
@@ -291,6 +361,20 @@ export function apply(ctx, config = {}) {
     fiber,
   })
 
+  // M5 NEEDS #3: real settings backend. When the driver config carries a
+  // settingsPath, mount the REAL dsh-settings SettingsProvider subclass over
+  // that document and publish it (the cordis shim does not drive
+  // Service.init, so load/publish is explicit) BEFORE the AgentLoop is built —
+  // the real constructor's installSettingsSection then registers the
+  // 'agent-loop' namespace against the live provider and the config value wins.
+  let settingsProvider
+  if (config.settingsPath) {
+    const doc = JSON.parse(readFileSync(config.settingsPath, 'utf8'))
+    settingsProvider = new ConfigSettingsProvider(loopCtx, config.settingsPath, doc)
+    settingsProvider.publish(structuredClone(doc))
+    hide('settings', settingsProvider)
+  }
+
   // Real services (worker-local, bridged to Java for observation).
   const agents = new AgentRegistry(loopCtx)
   const sessions = new SessionStore(loopCtx)
@@ -310,11 +394,29 @@ export function apply(ctx, config = {}) {
   hide('systemPrompt', systemPrompt)
 
   // The real AgentLoop service (constructor registers 'agentLoop' into Java).
+  // With settings mounted, the real constructor's installSettingsSection
+  // registers the 'agent-loop' namespace against the provider — so
+  // config.maxParallelToolCalls now reads through the settings scope.
   const agentLoop = new AgentLoop(loopCtx, {
     agents: [],
     maxParallelToolCalls: 2,
   })
   setAgentLoop(agentLoop)
+
+  // Direct ctx.settings consumption: register a second namespace straight
+  // against the live provider (the real dsh-settings register/scope.get), so
+  // Java can assert the config document resolved end-to-end.
+  let probeSettingsRead = () => ({})
+  if (settingsProvider) {
+    const probeSchema = z.object({
+      temperature: z.number().default(0.5),
+      apiKey: z.string().role('secret'),
+    })
+    const scope = loopCtx.settings.register(settingsNamespace('probe-settings'), probeSchema, {
+      base: { temperature: 0.5 },
+    })
+    probeSettingsRead = () => scope.get()
+  }
 
   // Create + publish a live ReactLoopAgent under a fixed identity.
   const agent = agentLoop.create(agentId, { provider: 'test', model: 'test-model' }, {})
@@ -353,6 +455,38 @@ export function apply(ctx, config = {}) {
   const getAgentSnapshot = () => ({ id: agent.id, status: agent.status })
   const callResolveModelInfo = () => llmSvc.resolveModelInfo({ provider: 'test', model: 'test-model' })
 
+  // Settings probes: the real provider's resolved values cross back to Java.
+  // describe() redacts (a wire surface) so the apiKey never leaves the worker
+  // verbatim; the raw document read stays available for the assertion surface.
+  const getSettingsSnapshot = () => {
+    if (!settingsProvider) return { enabled: false }
+    const descriptors = settingsProvider.describe({ redactSecrets: true })
+    return {
+      enabled: true,
+      documentPath: settingsProvider.documentPath,
+      // The REAL agent-loop wiring: installSettingsSection pointed the
+      // maxParallelToolCalls getter at the settings scope, so this reflects the
+      // test-config value (4) — not the constructor entry (2) or schema default (10).
+      resolvedMaxParallelToolCalls: agentLoop.config.maxParallelToolCalls,
+      registeredNamespaces: [...settingsProvider.registrations.keys()],
+      describe: descriptors.map((d) => ({
+        ns: d.ns,
+        value: d.value,
+        schema: d.schema,
+        revision: d.revision,
+        applies: d.applies,
+        ...d.base === undefined ? {} : { base: d.base },
+        ...d.user === undefined ? {} : { user: d.user },
+        ...d.secrets === undefined ? {} : { secrets: d.secrets },
+      })),
+      document: settingsProvider.document,
+    }
+  }
+  const updateSettings = async (ns, patch) => {
+    await settingsProvider.update(ns, patch)
+    return settingsProvider.get(ns)
+  }
+
   const probe = {
     serviceName: agentLoop.name,
     agentId,
@@ -361,6 +495,10 @@ export function apply(ctx, config = {}) {
     getAgentSnapshot,
     callResolveModelInfo,
     llmProvided: typeof loopCtx.llm.stream === 'function',
+    settingsEnabled: !!settingsProvider,
+    getSettingsSnapshot,
+    updateSettings,
+    probeSettingsRead,
   }
   ctx.provide('agentLoopProbe', probe)
   return probe

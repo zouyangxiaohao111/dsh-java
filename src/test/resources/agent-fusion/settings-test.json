@@ -1,0 +1,9 @@
+{
+  "agent-loop": {
+    "maxParallelToolCalls": 4
+  },
+  "probe-settings": {
+    "temperature": 0.7,
+    "apiKey": "sk-test-real"
+  }
+}
