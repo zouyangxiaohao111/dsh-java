@@ -13,6 +13,7 @@ Java cordis core (the only non-replaceable component).
 | `@deepseek-ai/dsh-session-projection` | overlay | real `index.ts` type-stripped: `SessionProjectionRegistry extends Service` — the object under test for the cordis Service bridge. |
 | `@deepseek-ai/dsh-session-stats` | overlay | real `index.ts` + `projection.ts` type-stripped; value deps `zod` (real npm) + `@deepseek-ai/dsh-llm/message` (overlay). |
 | `@deepseek-ai/dsh-system-prompt` | overlay | real `index.ts` (packages/core/system-prompt) type-stripped: the `SystemPrompt` registry service — section/context/tool/variable registration + `assemble()` over the `system-prompt/assemble` waterfall. Value deps `cordis` (shim) + `dsh-scope` + `schemastery` (overlays). |
+| `@deepseek-ai/dsh-tools` | overlay | real `packages/core/tools` type-stripped (M5-NEEDS-tools): the full `ToolRuntime` registry + `TOOL_RUNTIME_SCHEDULER` scheduler view + `register`/`get`/`schemas`/`executionMode` + the pre/guard/around/post/result execution pipeline, plus `defineTool` (schema.ts), json-schema validation, and the Code Mode transport (code-mode/ts-types/py-types — native mode exercised; a `ctx.codeRuntime` is a further NEEDS). |
 | `@deepseek-ai/dsh-scope` | overlay | real `index.ts` + `store.ts` type-stripped: `ScopedLayers` / `NamedEntries` / `AnonymousEntries` / `scopeTarget` — the scope-aware registry primitives `SystemPrompt` is built on. |
 | `@deepseek-ai/schemastery` | overlay | mini ESM surface for `z.object/boolean/string/array` with `.default()`/`.parse` (fills defaults) + `.merge`. |
 

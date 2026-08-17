@@ -85,40 +85,11 @@ class AgentLoopSettingsFusionTest {
         }
     }
 
-    /** Minimal Java ctx.tools seam: the exclusive-mode scheduler stub (no tool turn in this test). */
-    public static final class ToolsStub {
-        public Object executionMode(Map<String, Object> exec) {
-            Map<String, Object> mode = new LinkedHashMap<>();
-            mode.put("kind", "exclusive");
-            return mode;
-        }
-
-        public Object schedulerPrepare(Map<String, Object> exec) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            out.put("kind", "final-result");
-            out.put("exec", exec);
-            return out;
-        }
-
-        public Object schedulerDispatch(Map<String, Object> exec) {
-            return new LinkedHashMap<>();
-        }
-
-        public Object schedulerFinish(Map<String, Object> exec, Map<String, Object> result) {
-            return result;
-        }
-
-        public Object schedulerFinalize(Map<String, Object> exec, Map<String, Object> result) {
-            return result;
-        }
-    }
-
     /** The REAL agent-loop wiring + direct ctx.settings reads resolve the test-config document. */
     @Test
     void realSettingsBackendFeedsAgentLoopAndDirectReads() throws Exception {
         Context root = new Context();
         root.provide("llm", new LlmStub());
-        root.provide("tools", new ToolsStub());
 
         try (NodeWorkerJsHost host = new NodeWorkerJsHost()) {
             try {
@@ -190,7 +161,6 @@ class AgentLoopSettingsFusionTest {
     void settingsSeamStaysInertWithoutConfigPath() throws Exception {
         Context root = new Context();
         root.provide("llm", new LlmStub());
-        root.provide("tools", new ToolsStub());
 
         try (NodeWorkerJsHost host = new NodeWorkerJsHost()) {
             try {

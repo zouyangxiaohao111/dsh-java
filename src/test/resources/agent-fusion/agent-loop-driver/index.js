@@ -7,19 +7,20 @@
  *
  *   1. Instantiates the real services against a HYBRID loopCtx: the
  *      machine-critical seams stay worker-local REAL instances (AgentRegistry /
- *      SessionStore / SystemPrompt / the tools scheduler keyed by the real
- *      {@code TOOL_RUNTIME_SCHEDULER} symbol / the agentLoop service), so the
- *      live Agent/Session never lose their prototype methods. The generic
- *      cordis surface (on/emit/events/serial/waterfall/effect/inject/provide/
- *      get) delegates to the bridge ctx, so events/registrations still land in
- *      the Java core.
+ *      SessionStore / SystemPrompt / the REAL @deepseek-ai/dsh-tools
+ *      {@code ToolRuntime} / the agentLoop service), so the live Agent/Session
+ *      never lose their prototype methods. The generic cordis surface
+ *      (on/emit/events/serial/waterfall/effect/inject/provide/get) delegates to
+ *      the bridge ctx, so events/registrations still land in the Java core.
  *   2. Event payloads that carry the live Agent / Session are SANITIZED at the
  *      bridge boundary: the worker's events.dispatch / serial overrides send a
  *      lightweight envelope ({id,status,sessionId} / {id,eventCount}) to Java
  *      for listener resolution and Java-native listeners, while JS listeners
  *      folded locally still receive the ORIGINAL live objects. Without this,
  *      the bridge's serializeValue would throw on the Agent/Session object
- *      graph (shared references treated as cycles).
+ *      graph (shared references treated as cycles). The real ToolRuntime's
+ *      execution carries a Symbol correlation token, which is likewise dropped
+ *      at this boundary.
  *   3. {@code ctx.llm} is the JAVA-provided seam: {@code stream(request)}
  *      returns a materialized chunk array (the machine's {@code for await}
  *      iterates it); {@code prepareCall} returns a PreparedLlmCall whose
@@ -35,19 +36,17 @@
  *      {@code getAgentSnapshot()} returns live status, and
  *      {@code callResolveModelInfo()} exercises the llm seam.
  *
- * <p><b>Honest boundaries (NEEDS)</b>: the {@code llm} seam streams canned
- * chunks from Java (no real adapter/streaming transport); the
- * {@code tools[TOOL_RUNTIME_SCHEDULER]} is a stub scheduler (no real executor
- * / registry / code runtime); {@code settings} is the REAL dsh-settings
- * SettingsProvider when the driver config carries a {@code settingsPath} — the
- * concrete provider reads the test configuration document and the real
- * AgentLoop constructor's {@code installSettingsSection} registers the
- * {@code agent-loop} namespace against it, so the machine's
- * {@code config.maxParallelToolCalls} reflects the config value (M5 NEEDS #3;
- * a file-watching / atomic-write provider is a further NEEDS); the hybrid loopCtx keeps
- * the real services worker-local because the bridge cannot carry live
- * prototype-bearing objects (a real cross-realm ctx with live services is a
- * NEEDS).
+ * <p><b>Honest boundaries</b>: the {@code llm} seam streams canned chunks from
+ * Java (no real adapter/streaming transport); {@code settings} is the REAL
+ * dsh-settings SettingsProvider when the driver config carries a
+ * {@code settingsPath} (M5 NEEDS #3); {@code ctx.tools} is the REAL
+ * @deepseek-ai/dsh-tools {@code ToolRuntime} (M5 NEEDS #2) — it provides
+ * {@code tools} into the Java core, registers a real {@code echo} tool via
+ * {@code register()}, and drives the real pre/guard/around/post/result
+ * pipeline in native mode (a {@code ctx.codeRuntime} for Code Mode is a
+ * further NEEDS); the hybrid loopCtx keeps the real services worker-local
+ * because the bridge cannot carry live prototype-bearing objects (a real
+ * cross-realm ctx with live services is a NEEDS).
  *
  * <p>The apply is SYNCHRONOUS: the sync NodeWorkerJsHost runner cannot
  * re-enter the pump from inside an async continuation (nested pumps never
@@ -64,7 +63,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionStore } from '@deepseek-ai/dsh-session'
 import { SettingsProvider, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
-import { TOOL_RUNTIME_SCHEDULER } from '@deepseek-ai/dsh-tools'
+import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 
 /** Cordis plugin name. */
@@ -72,13 +71,17 @@ export const name = 'agent-loop-driver'
 /** The agentLoop service this plugin installs is visible to dependents. */
 export const provide = ['agentLoop']
 /**
- * The Java-provided llm/tools seams this plugin consumes through ctx.get().
- * Declaring them as inject makes the Java core gate this plugin's activation on
- * their availability and populates this fiber's store, so the strict
+ * The Java-provided llm seam this plugin consumes through ctx.get().
+ * Declaring it as inject makes the Java core gate this plugin's activation on
+ * its availability and populates this fiber's store, so the strict
  * `ctx.get('llm')` in apply() resolves (a sibling plugin's provide is not on
  * this fiber's ancestor chain without inject).
+ *
+ * `tools` is NOT injected: this driver mounts the REAL `@deepseek-ai/dsh-tools`
+ * `ToolRuntime` worker-locally, which provides `ctx.tools` into the Java core
+ * itself (M5 NEEDS #2) — the old Java-provided stub is gone.
  */
-export const inject = ['llm', 'tools']
+export const inject = ['llm']
 
 /**
  * Sanitize a value for the bridge boundary: replace live Agent / Session
@@ -96,6 +99,10 @@ function makeSanitizer() {
     && Array.isArray(v.events)
   const seen = new WeakSet()
   const walk = (v) => {
+    // The real ToolRuntime's execution carries a Symbol correlation token
+    // (TOOL_EXECUTION token); serializeValue cannot cross a symbol, so drop it
+    // at the bridge boundary (Java never needs the token identity).
+    if (typeof v === 'symbol') return undefined
     if (v === null || typeof v !== 'object') return v
     if (agentLike(v)) return { id: v.id, status: v.status, sessionId: v.session?.id }
     if (sessionLike(v)) {
@@ -149,7 +156,6 @@ function makeLoopCtx(ctx, deps) {
 
   const loopCtx = {
     llm: deps.llm,
-    tools: deps.tools,
     fiber: deps.fiber,
     /**
      * Sanitizing emit dispatch. Mirror the bridge seam's caller-visible
@@ -276,25 +282,32 @@ function makeLoopCtx(ctx, deps) {
 }
 
 /**
- * Build the worker-local ctx.tools: a scheduler stub keyed by the real
- * TOOL_RUNTIME_SCHEDULER symbol, delegating decisions to the Java-provided
- * tools seam.
- * @param toolsSvc - Java tools service (executionMode / schedulerPrepare /
- *   schedulerDispatch / schedulerFinish / schedulerFinalize).
- * @returns the symbol-keyed ctx.tools surface the machine drives.
+ * The REAL `echo` tool this driver registers into the real ToolRuntime (M5
+ * NEEDS #2). Native mode, synchronous body — the real registry snapshots args,
+ * runs the pre-execute/guard gate, dispatches the body, validates the returned
+ * value against the declared output schema, renders model content, and routes
+ * the result through post-execute — all the real dsh-tools machinery, with no
+ * Java stub seam.
  */
-function makeTools(toolsSvc) {
-  return {
-    executionMode(exec) {
-      return toolsSvc.executionMode(exec)
+function makeEchoTool() {
+  return defineTool({
+    name: 'echo',
+    description: 'Echo the given message back to the caller.',
+    parameters: {
+      msg: { type: 'string', required: true, description: 'The message to echo.' },
     },
-    [TOOL_RUNTIME_SCHEDULER]: {
-      prepare: async (exec) => toolsSvc.schedulerPrepare(exec),
-      dispatch: async (exec) => toolsSvc.schedulerDispatch(exec),
-      finish: (exec, result) => toolsSvc.schedulerFinish(exec, result),
-      finalize: (exec, result) => toolsSvc.schedulerFinalize(exec, result),
+    output: {
+      schema: {
+        type: 'object',
+        // The value schema DSL expresses requiredness per property, not as an
+        // object-level `required` array (which the DSL rejects at the root).
+        properties: { text: { type: 'string', required: true } },
+        additionalProperties: false,
+      },
+      render: (args, value) => [{ type: 'text', text: String(value.text) }],
     },
-  }
+    execute: async (args) => ({ text: `echo: ${args.msg}` }),
+  })
 }
 
 /**
@@ -338,9 +351,8 @@ export function apply(ctx, config = {}) {
   config = config ?? {}
   const agentId = config.agentId ?? 'agent-a'
 
-  // Java-provided seams.
+  // Java-provided seam.
   const llmSvc = ctx.get('llm')
-  const toolsSvc = ctx.get('tools')
 
   // Worker-local llm adapter: returns a PreparedLlmCall whose stream serves the
   // Java-provided chunk sequence (the machine's `for await` iterates it).
@@ -357,7 +369,6 @@ export function apply(ctx, config = {}) {
   const fiber = makeFiber()
   const { loopCtx, setAgentLoop, hide } = makeLoopCtx(ctx, {
     llm: llmAdapter,
-    tools: makeTools(toolsSvc),
     fiber,
   })
 
@@ -392,6 +403,21 @@ export function apply(ctx, config = {}) {
   hide('agents', agents)
   hide('sessions', sessions)
   hide('systemPrompt', systemPrompt)
+
+  // M5 NEEDS #2: the REAL @deepseek-ai/dsh-tools ToolRuntime. Constructing it
+  // against the hybrid loopCtx provides `ctx.tools` into the Java core (via
+  // the cordis shim's super(ctx,'tools') → bridge provide) and wires its
+  // schemas into the real SystemPrompt. It is hidden (non-enumerable) so the
+  // machine reads it live while the bridge serializer never walks back into it
+  // through loopCtx (its `this.ctx === loopCtx` back-reference would cycle).
+  const toolRuntime = new ToolRuntime(loopCtx, { mode: 'native' })
+  hide('tools', toolRuntime)
+
+  // Register a REAL tool into the real registry (global layer). The returned
+  // disposer is intentionally not retained: the bridge effect owns it with the
+  // driver fiber, so it is unregistered exactly when this fiber unloads.
+  toolRuntime.register(makeEchoTool())
+  const registeredToolNames = () => toolRuntime.schemas().map(s => s.name)
 
   // The real AgentLoop service (constructor registers 'agentLoop' into Java).
   // With settings mounted, the real constructor's installSettingsSection
@@ -447,7 +473,16 @@ export function apply(ctx, config = {}) {
     if (event.type === 'assistant/message') out.text = extractText(data.message)
     if (event.type === 'user/message') out.text = extractText(data)
     if (event.type === 'tool/call') { out.toolName = data.name; out.callId = data.callId }
-    if (event.type === 'tool/result') out.callId = data.message?.source?.callId
+    if (event.type === 'tool/result') {
+      out.callId = data.message?.source?.callId
+      // createToolResultMessage wraps the rendered content in a 'tool-result'
+      // block: { type:'tool-result', content:[...real blocks...], isError }.
+      const block = (data.message?.content ?? []).find(b => b && b.type === 'tool-result')
+      const inner = block?.content ?? data.message?.content ?? []
+      out.text = (Array.isArray(inner) ? inner : [])
+        .filter(b => b && b.type === 'text').map(b => b.text).join('')
+      out.isError = block?.isError === true
+    }
     if (event.type === 'turn/end') out.reason = data.reason
     if (event.type === 'request/header') out.model = data.header?.config?.model
     return out
@@ -487,6 +522,28 @@ export function apply(ctx, config = {}) {
     return settingsProvider.get(ns)
   }
 
+  // M5 NEEDS #2 probes: drive the REAL ctx.tools directly (bypassing the
+  // agent-loop). The real pipeline snapshots + freezes args, runs the ordered
+  // pre-execute gate + monotonic guards, dispatches the registered body,
+  // validates the returned value against the declared output schema, renders
+  // model content, runs post-execute, and materializes the final frozen result.
+  const executeTool = async (name, args) => {
+    const controller = new AbortController()
+    const result = await toolRuntime.execute({
+      callId: `direct-${name}`,
+      name,
+      arguments: args ?? {},
+      signal: controller.signal,
+      agent,
+    })
+    return {
+      isError: result.isError,
+      ...result.value !== undefined ? { value: result.value } : {},
+      content: result.content,
+      ...result.error !== undefined ? { error: result.error.message } : {},
+    }
+  }
+
   const probe = {
     serviceName: agentLoop.name,
     agentId,
@@ -495,6 +552,9 @@ export function apply(ctx, config = {}) {
     getAgentSnapshot,
     callResolveModelInfo,
     llmProvided: typeof loopCtx.llm.stream === 'function',
+    toolsProvided: typeof toolRuntime.execute === 'function',
+    toolNames: registeredToolNames(),
+    executeTool,
     settingsEnabled: !!settingsProvider,
     getSettingsSnapshot,
     updateSettings,

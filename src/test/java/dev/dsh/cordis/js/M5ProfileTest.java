@@ -23,21 +23,24 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>profile = {@code src/test/resources/m5/cordis.yml}:
  * <ul>
  *   <li>Java 插件(2):{@code java:dev.dsh.demo.CounterPlugin}、{@code java:dev.dsh.demo.SeamPlugin}
- *       (提供 {@code llm}/{@code tools} 服务 seam);</li>
+ *       (提供 {@code llm} 服务 seam);</li>
  *   <li>dsh JS 插件(3,node: 宿主):require-probe / agent-loop / fusion
  *       (复用 agent-fusion overlay 的 node_modules);fusion 内部同 worker mount 真实
  *       session-stats({@code mountSessionStats},见 fusion-plugin);agent-loop 内部再注册
- *       systemPrompt / agents / sessions 服务。注:session-stats 不单列为 node: 条目 ——
- *       它 inject fusion 的 {@code sessionProjections},而每个 node: 插件跑独立 worker,
- *       fusion 提供的值携带 worker 内 fn 句柄跨 worker 无法反序列化(基线静默吞掉该 apply
- *       失败);跨 worker JS→JS 组合不在 M5 范围。</li>
+ *       systemPrompt / agents / sessions / tools 服务(后者为真实 dsh-tools
+ *       ToolRuntime,由 worker 经桥 provide 进 Java 核心,M5-NEEDS-tools)。注:
+ *       session-stats 不单列为 node: 条目 —— 它 inject fusion 的
+ *       {@code sessionProjections},而每个 node: 插件跑独立 worker,fusion 提供的值携带
+ *       worker 内 fn 句柄跨 worker 无法反序列化(基线静默吞掉该 apply 失败);跨 worker
+ *       JS→JS 组合不在 M5 范围。</li>
  * </ul>
  *
  * <p>覆盖(M5 验收 1/3):
  * <ol>
  *   <li>混排全部注册进 registry:断言 {@code registry.size}、宿主选择(Java→JAVA、dsh→NODE);</li>
- *   <li>组合:Java 插件 provide {@code llm}/{@code tools} → 真实 dsh agent-loop(node:) inject
- *       并调用(经 ctx,跨桥 RPC)—— 跑一轮文本 + 一轮工具,断言 Java seam 被消费;</li>
+ *   <li>组合:Java 插件 provide {@code llm} + worker 内真实 dsh-tools provide
+ *       {@code tools} → 真实 dsh agent-loop(node:) 消费(经 ctx,跨桥 RPC)——
+ *       跑一轮文本 + 一轮工具,断言真实 echo 工具执行结果;</li>
  *   <li>Java → JS:真实 dsh system-prompt 的 {@code assemble()} 从 Java 触发并合并回 Java。</li>
  * </ol>
  *
@@ -98,8 +101,9 @@ class M5ProfileTest {
             assertThat((Object) root.get("counter")).isNotNull();
             SeamPlugin.Llm llm = (SeamPlugin.Llm) root.get("llm");
             assertThat(llm).isNotNull();
-            SeamPlugin.Tools tools = (SeamPlugin.Tools) root.get("tools");
-            assertThat(tools).isNotNull();
+            // tools 由 worker 内真实 @deepseek-ai/dsh-tools ToolRuntime 经桥 provide
+            // 进 Java 核心(M5-NEEDS-tools,worker→Java 组合方向),非 Java seam。
+            assertThat((Object) root.get("tools")).isNotNull();
 
             // dsh JS 插件注册的服务可见(经桥);systemPrompt 由 agent-loop 内部 SystemPrompt 提供
             assertThat((Object) root.get("systemPrompt")).isNotNull();
@@ -148,13 +152,19 @@ class M5ProfileTest {
             assertThat(info.get("model")).isEqualTo("test-model");
             assertThat(llm.resolveCalls).isEqualTo(1);
 
-            // turn 2(工具):真实机器调 Java ctx.tools 调度器桩
+            // turn 2(工具):真实机器调 worker 内真实 ToolRuntime,echo 工具真实执行
             Map<String, Object> snap2 = map(loopHost.invokeFn(runTurn, List.of("run the tool")));
             assertThat(snap2.get("status")).isEqualTo("idle");
             assertThat(llm.streamCalls).isEqualTo(3);   // 1(文本)+ 2(工具调用的两步)
-            assertThat(tools.calls).hasSize(1);
-            assertThat(tools.calls.get(0).get("name")).isEqualTo("echo");
-            assertThat(tools.calls.get(0).get("callId")).isEqualTo("call-1");
+            List<Map<String, Object>> log2 = list(loopHost.invokeFn(getSessionLog, List.of()));
+            List<Map<String, Object>> toolResults = log2.stream()
+                    .filter(e -> "tool/result".equals(e.get("type"))).toList();
+            assertThat(toolResults).hasSize(1);
+            assertThat(toolResults.get(0).get("callId")).isEqualTo("call-1");
+            // 真实执行结果(非罐装桩):echo 工具 body 跑过、值过 output schema 校验、
+            // definition render 投影出模型内容。
+            assertThat(String.valueOf(toolResults.get(0).get("text"))).isEqualTo("echo: hi");
+            assertThat(toolResults.get(0).get("isError")).isEqualTo(false);
 
             // ---- ③ Java → JS:agent-loop 内部 dsh system-prompt 真实 assemble() 从 Java 触发 ----
             Map<String, Object> systemPrompt = map(root.get("systemPrompt"));

@@ -30,21 +30,23 @@ import static org.assertj.core.api.Assertions.assertThat;
  * bridge's serializer treats the Agent/Session object graph (shared
  * references) as cycles.
  *
- * <p>The {@code ctx.llm} / {@code ctx.tools} seams are JAVA-provided:
- * {@code llm.stream(request)} returns a materialized chunk array (the
- * machine's {@code for await} iterates it), {@code llm.prepareCall} returns a
- * PreparedLlmCall whose {@code stream} serves Java's chunks,
- * {@code llm.resolveModelInfo} delegates; the tools scheduler records calls
- * and returns a canned result. The driver publishes a live
+ * <p>The {@code ctx.llm} seam is JAVA-provided: {@code llm.stream(request)}
+ * returns a materialized chunk array (the machine's {@code for await}
+ * iterates it), {@code llm.prepareCall} returns a PreparedLlmCall whose
+ * {@code stream} serves Java's chunks, {@code llm.resolveModelInfo}
+ * delegates. {@code ctx.tools} is the REAL {@code @deepseek-ai/dsh-tools}
+ * {@code ToolRuntime} the driver mounts worker-locally (M5 NEEDS #2): it
+ * provides {@code tools} into the Java core, registers a real {@code echo}
+ * tool, and the agent-loop's {@code tool-calls} machine drives the real
+ * pre/guard/dispatch/post/result pipeline. The driver publishes a live
  * {@code ReactLoopAgent} (session/agent entered + announced into Java), and
  * Java triggers one agent turn via the {@code runTurn} probe (followup +
  * whenIdle, settled through the sync host's microtask pump), then reads the
  * real session log back and asserts the turn/step machine ran (llm.stream +
- * tools scheduler calls, assistant message, multi-step tool turn).
+ * real tool execution, assistant message, multi-step tool turn).
  *
  * <p><b>Honest boundaries (NEEDS)</b>: the {@code llm} seam streams canned
- * chunks from Java (no real adapter / streaming transport); the tools
- * scheduler is a stub (no real executor / registry / code runtime);
+ * chunks from Java (no real adapter / streaming transport);
  * {@code settings} resolves through an inert {@code ctx.inject}; the hybrid
  * loopCtx keeps the real services worker-local (the bridge cannot carry live
  * prototype-bearing objects).
@@ -111,49 +113,6 @@ class AgentLoopFusionTest {
         }
     }
 
-    // ---- Java-provided ctx.tools seam ----
-
-    /** ctx.tools: exclusive-mode scheduler stub returning a canned result, recording every call. */
-    public static final class ToolsStub {
-        public final List<Map<String, Object>> calls = new ArrayList<>();
-        public final Map<String, Object> result;
-        public int prepareCalls = 0;
-
-        public ToolsStub(Map<String, Object> result) {
-            this.result = result;
-        }
-
-        public Object executionMode(Map<String, Object> exec) {
-            Map<String, Object> mode = new LinkedHashMap<>();
-            mode.put("kind", "exclusive");
-            return mode;
-        }
-
-        public Object schedulerPrepare(Map<String, Object> exec) {
-            prepareCalls++;
-            calls.add(exec);
-            Map<String, Object> out = new LinkedHashMap<>();
-            out.put("kind", "final-result");
-            out.put("exec", exec);
-            out.put("result", result);
-            return out;
-        }
-
-        public Object schedulerDispatch(Map<String, Object> exec) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            out.put("result", result);
-            return out;
-        }
-
-        public Object schedulerFinish(Map<String, Object> exec, Map<String, Object> result) {
-            return result;
-        }
-
-        public Object schedulerFinalize(Map<String, Object> exec, Map<String, Object> result) {
-            return result;
-        }
-    }
-
     // ---- chunk / block builders (real StreamChunk JSON shape) ----
 
     private static Map<String, Object> textChunk(String text) {
@@ -193,24 +152,12 @@ class AgentLoopFusionTest {
         return List.of(cs);
     }
 
-    private static Map<String, Object> toolResult(String text) {
-        Map<String, Object> block = new LinkedHashMap<>();
-        block.put("type", "text");
-        block.put("text", text);
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("content", List.of(block));
-        result.put("isError", false);
-        return result;
-    }
-
     /** Java triggers one agent turn → the real turn/step machine runs (llm.stream) → result crosses back. */
     @Test
     void agentLoopTextTurnRunsStepMachineAndReturnsResultToJava() throws Exception {
         Context root = new Context();
         LlmStub llm = new LlmStub().response(chunks(textChunk("Hello from agent-loop"), finishChunk()));
-        ToolsStub tools = new ToolsStub(toolResult("tool says hi"));
         root.provide("llm", llm);
-        root.provide("tools", tools);
         List<String> created = new ArrayList<>();
         List<String> status = new ArrayList<>();
         root.on("agent/created", (ctx, args) -> {
@@ -274,16 +221,14 @@ class AgentLoopFusionTest {
         }
     }
 
-    /** A tool-call turn: the tools scheduler stub is invoked and the machine continues to a second step. */
+    /** A tool-call turn: the REAL @deepseek-ai/dsh-tools registry executes the echo tool and the machine continues to a second step. */
     @Test
-    void agentLoopToolTurnRunsSchedulerAndSecondStep() throws Exception {
+    void agentLoopToolTurnRunsRealToolAndSecondStep() throws Exception {
         Context root = new Context();
         LlmStub llm = new LlmStub()
                 .response(chunks(toolCallChunk("call-1", "echo", "{\"msg\":\"hi\"}"), finishChunk()))
                 .response(chunks(textChunk("tool result acknowledged"), finishChunk()));
-        ToolsStub tools = new ToolsStub(toolResult("tool says hi"));
         root.provide("llm", llm);
-        root.provide("tools", tools);
 
         try (NodeWorkerJsHost host = new NodeWorkerJsHost()) {
             try {
@@ -291,16 +236,18 @@ class AgentLoopFusionTest {
                         Map.of("agentId", "agent-a"));
 
                 Map<String, Object> probe = map(root.get("agentLoopProbe"));
+                // ctx.tools IS the real ToolRuntime mounted by the driver.
+                assertThat(probe.get("toolsProvided")).isEqualTo(true);
+                @SuppressWarnings("unchecked")
+                List<String> toolNames = (List<String>) probe.get("toolNames");
+                assertThat(toolNames).containsExactly("echo");
+
                 NodeRef runTurn = (NodeRef) probe.get("runTurn");
                 Map<String, Object> snap = map(host.invokeFn(runTurn, List.of("run the tool")));
                 assertThat(snap.get("status")).isEqualTo("idle");
 
                 // Two llm.stream calls (step 1 tool-call, step 2 text).
                 assertThat(llm.streamCalls).isEqualTo(2);
-                // The tools scheduler stub was consulted once with the parsed tool call.
-                assertThat(tools.calls).hasSize(1);
-                assertThat(tools.calls.get(0).get("name")).isEqualTo("echo");
-                assertThat(tools.calls.get(0).get("callId")).isEqualTo("call-1");
 
                 NodeRef getLog = (NodeRef) probe.get("getSessionLog");
                 List<Map<String, Object>> log = list(host.invokeFn(getLog, List.of()));
@@ -315,6 +262,11 @@ class AgentLoopFusionTest {
                         .filter(e -> "tool/result".equals(e.get("type"))).toList();
                 assertThat(toolResults).hasSize(1);
                 assertThat(toolResults.get(0).get("callId")).isEqualTo("call-1");
+                // REAL execution (not a canned stub result): the echo tool's body ran,
+                // its value validated against the declared output schema, and the
+                // definition-owned render projected the model content.
+                assertThat(String.valueOf(toolResults.get(0).get("text"))).isEqualTo("echo: hi");
+                assertThat(toolResults.get(0).get("isError")).isEqualTo(false);
                 Map<String, Object> assistant2 = log.stream()
                         .filter(e -> "assistant/message".equals(e.get("type")) && "2".equals(String.valueOf(e.get("step"))))
                         .findFirst().orElseThrow();
