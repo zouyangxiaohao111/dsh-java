@@ -1,0 +1,28 @@
+# M5 混排 profile:一份 cordis.yml 同时声明 Java 插件(java:)与 dsh JS 插件(node:),
+# 由 M5ProfileTest 经 PluginLoaderService 读取、逐条注册进 registry 并断言。
+#
+# 格式 = dsh cordis.yml 兼容 + Java 扩展(design §2.1):
+#   source: java:dev.dsh.demo.X   — Java 插件(类名,ClassLoader 加载)
+#   source: node:<路径>            — dsh JS 插件,显式走 NodeWorkerJsHost
+#
+# node: 插件复用 agent-fusion overlay 的 node_modules(../agent-fusion,已提交);
+# session-stats 补充使用 dsh-plugin/esm overlay(zod 由 npm install 重装,gitignored)。
+# 顺序即注册顺序:Java 提供者(seams)先于消费它的 agent-loop;fusion(提供
+# sessionProjections)先于注入它的 session-stats。agent-loop 内部已注册 systemPrompt/
+# agents/sessions 服务,故不单列 system-prompt-driver(避免 'systemPrompt' 重复注册)。
+plugins:
+  # ---- Java 插件(2)----
+  - name: counter
+    source: java:dev.dsh.demo.CounterPlugin
+  - name: seams
+    source: java:dev.dsh.demo.SeamPlugin
+  # ---- dsh JS 插件(node:,复用 agent-fusion overlay 的 node_modules)----
+  - name: require-probe
+    source: node:../agent-fusion/require-probe
+  - name: agent-loop
+    source: node:../agent-fusion/agent-loop-driver
+  - name: fusion
+    source: node:../agent-fusion/fusion-plugin
+  # ---- dsh JS 插件(node:,补充 dsh-plugin/esm overlay)----
+  - name: session-stats
+    source: node:../dsh-plugin/esm/session-stats

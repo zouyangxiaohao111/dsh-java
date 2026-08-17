@@ -63,7 +63,14 @@ import { TOOL_RUNTIME_SCHEDULER } from '@deepseek-ai/dsh-tools'
 export const name = 'agent-loop-driver'
 /** The agentLoop service this plugin installs is visible to dependents. */
 export const provide = ['agentLoop']
-export const inject = []
+/**
+ * The Java-provided llm/tools seams this plugin consumes through ctx.get().
+ * Declaring them as inject makes the Java core gate this plugin's activation on
+ * their availability and populates this fiber's store, so the strict
+ * `ctx.get('llm')` in apply() resolves (a sibling plugin's provide is not on
+ * this fiber's ancestor chain without inject).
+ */
+export const inject = ['llm', 'tools']
 
 /**
  * Sanitize a value for the bridge boundary: replace live Agent / Session
