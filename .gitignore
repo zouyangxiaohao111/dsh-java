@@ -6,3 +6,6 @@ out/
 # dsh-plugin spike 的真实 npm 依赖(zod 由 npm install 重装;手写 shim 保留提交)
 src/test/resources/dsh-plugin/node_modules/zod/
 src/test/resources/dsh-plugin/node_modules/.package-lock.json
+# agent-fusion overlay 的真实 npm 依赖(经 npm install 重装;手写 shim 保留提交)
+src/test/resources/agent-fusion/node_modules/eventsource-parser/
+src/test/resources/agent-fusion/node_modules/.package-lock.json
