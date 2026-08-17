@@ -5,10 +5,12 @@ import com.fasterxml.jackson.databind.node.NullNode;
 import dev.dsh.cordis.Context;
 import dev.dsh.cordis.Events;
 import dev.dsh.cordis.Inject;
+import dev.dsh.cordis.Logger;
 import dev.dsh.cordis.Reflect;
 import dev.dsh.cordis.util.Disposable;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -74,6 +76,8 @@ public final class NodeWorkerBridge {
                 return doWaterfallPlan(args);
             case "commandRegister":
                 return doCommandRegister(args);
+            case "logger":
+                return doLogger(args);
             default:
                 throw new NodeBridgeError("unknown ctx method " + method);
         }
@@ -243,6 +247,35 @@ public final class NodeWorkerBridge {
         }
         opts.removeIf(Map::isEmpty);
         commands.put(name, new CommandEntry(argDef, opts, action));
+        return NullNode.instance;
+    }
+
+    /**
+     * Worker 发起的日志调用:{@code ctx.logger(name).<type>(format, ...args)}。把
+     * name/type/args 转给 Java {@code ctx.logger} 的对应方法,消息进入 Java LoggerService
+     * —— 复用 P3 对齐的 Logger 格式化层(printf 占位符、每行截断、ANSI name 着色),printf
+     * 在 Java 侧展开(worker 只传 format + args,不预格式化)。
+     *
+     * <p>无 name(name 为 JSON null)时按调用 ctx 的 fiber 名解析默认 logger(cordis 语义:
+     * {@code ctx.logger.warn(...)} 等价 {@code ctx.logger().warn(...)},对应 LoggerService
+     * 的 current(caller))。handler 在 reader 线程执行,exporter 必须非阻塞(与其它 ctxCall
+     * 一致,否则与 worker 嵌套等待死锁)。
+     */
+    private JsonNode doLogger(JsonNode args) {
+        JsonNode nameNode = args.get(0);
+        String name = nameNode != null && nameNode.isTextual() ? nameNode.asText() : null;
+        String type = args.get(1).asText("");
+        Object[] msgArgs = toEventArgs(args.get(2));
+        Object format = msgArgs.length > 0 ? msgArgs[0] : "";
+        Object[] rest = msgArgs.length > 1 ? Arrays.copyOfRange(msgArgs, 1, msgArgs.length) : new Object[0];
+        Logger logger = name != null ? ctx.logger(name) : ctx.logger();
+        switch (type) {
+            case "error" -> logger.error(format, rest);
+            case "info" -> logger.info(format, rest);
+            case "warn" -> logger.warn(format, rest);
+            case "debug" -> logger.debug(format, rest);
+            default -> throw new NodeBridgeError("unknown logger type '" + type + "'");
+        }
         return NullNode.instance;
     }
 

@@ -147,13 +147,38 @@ function bridgeCall(type, payload) {
   }
 }
 
+// ---- logger 桥(ctx.logger(name) / ctx.logger.warn(...))----
+// 两个调用形式都经 ctxCall method 'logger' 转发到 Java ctx.logger 的对应方法,消息进入
+// Java LoggerService —— 复用 P3 对齐的 Logger 格式化层(printf 占位符 / 每行截断 /
+// ANSI name 着色)。name=null 表示"无 name 调用":Java 侧按调用 ctx 的 fiber 名解析默认
+// logger(cordis 语义,ctx.logger.warn(...) 等价 ctx.logger().warn(...))。format + args
+// 原样过桥,printf 在 Java 侧展开(worker 不预格式化)。
+function makeLogger(ctxId, name) {
+  const send = (type) => (...args) =>
+    bridgeCall('ctxCall', {
+      ctx: ctxId,
+      method: 'logger',
+      args: [name == null ? null : name, type, args.map(x => serializeValue(x))],
+    })
+  const log = function () { return log }
+  log.error = send('error')
+  log.info = send('info')
+  log.warn = send('warn')
+  log.debug = send('debug')
+  return log
+}
+
 // ---- ctx shim(与 ctx.js 同一契约面)----
 function makeCtx(ctxId) {
-  // logger 既可当函数调用(ctx.logger('agents').warn),也带方法属性 —— AgentRegistry 直接读
-  // this.ctx.logger.warn(...)(无 name 调用),故 logger 必须是"函数 + 方法"对象。
-  const noop = () => {}
-  const logger = function () { return logger }
-  logger.error = logger.info = logger.warn = logger.debug = noop
+  // logger 既可当函数调用(ctx.logger('agents') → 命名 logger),也带方法属性
+  // (AgentRegistry 直接读 this.ctx.logger.warn(...) 的无 name 调用)。两者都经桥
+  // 转发到 Java Logger 格式化层(见 makeLogger)。
+  const defaultLogger = makeLogger(ctxId, undefined)
+  const logger = function (name) { return name === undefined ? defaultLogger : makeLogger(ctxId, name) }
+  logger.error = defaultLogger.error
+  logger.info = defaultLogger.info
+  logger.warn = defaultLogger.warn
+  logger.debug = defaultLogger.debug
   // 最小 fiber seam:AgentRegistry.hasLifecycleAncestor 做 identity 比较(fiber === candidate),
   // 跨桥无法成立;提供终止链(fiber.parent.fiber === fiber)使其在首次比较即返回 false。
   // 真实 fiber 状态/父子关系跨桥 → NEEDS。非可枚举:该链自引用,若被 serializeValue
