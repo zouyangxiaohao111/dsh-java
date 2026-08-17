@@ -203,6 +203,10 @@ function makeCtx(ctxId) {
     // waterfall:Java 只回传该 dispatch 收纳的 JS listener fn 句柄(顺序),worker 本地直接调用,
     // 无往返 —— 同步宿主在 bridgeCall 阻塞期间无法再同步调 JS 句柄,故 JS-only 链才能本地折叠。
     // Java 原生(non-JS)listener 混入时 Java 侧抛明确错误(记 NEEDS)。
+    // 注意:listener/default 返回 Promise 时**不**在此 syncWait —— 本 seam 会被从 microtask
+    // continuation 里调用(agent-loop 的 pre-step/request waterfall),在 _tickCallback 内部再
+    // 嵌套一个 _tickCallback 泵会永不 settle(嵌套泵限制)。改为原样返回 Promise,由调用方的
+    // `await`(顶层 pump)驱动 settlement。
     waterfall: (target, name, ...args) => {
       const next = args[args.length - 1]
       const payload = args.slice(0, -1)
@@ -210,13 +214,9 @@ function makeCtx(ctxId) {
       const listeners = Array.isArray(plan) ? plan : []
       const call = (idx) => {
         if (idx >= listeners.length) return next(...payload)
-        let result = listeners[idx](...payload, () => call(idx + 1))
-        if (result && typeof result.then === 'function') result = syncWaitPromise(result, 'waterfall listener ' + name)
-        return result
+        return listeners[idx](...payload, () => call(idx + 1))
       }
-      let result = call(0)
-      if (result && typeof result.then === 'function') result = syncWaitPromise(result, 'waterfall ' + name)
-      return result
+      return call(0)
     },
     // serial(cordis events.serial):按序折叠 JS listener,首个 bail 值停下(dispatch.ts 的
     // agentEvents.serial 用它)。Java 原生 listener 混入 → Java 侧抛明确错误(记 NEEDS)。
