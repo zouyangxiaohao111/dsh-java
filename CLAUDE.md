@@ -27,8 +27,10 @@
 - **M2**:GraalJS 桥 `dev.dsh.cordis.js`(JsHost/JsCtxBridge/JsPluginAdapter;真实 `@koishijs/plugin-echo` 加载响应)。
 - **M2 深化**:async apply、JS next 链、command option、ServiceProxy 跨语言 RPC、`JsHost` 接口 seam。
 - **M3**:热重载 `dev.dsh.cordis.reload`(Java ClassLoader + JS 上下文重启 + FileWatcher + 回滚)。
-- **M4(规划)**:NodeWorkerJsHost + 三宿主 PluginRuntimeResolver + 融合证明 spike。
-- **之后**:一步一步把 dsh harness 组件替换成 Java(重量 OS 件 shell/sandbox/code-runtime 留 Node worker,Java 化部分 llm/mcp/编排逐步替换)。
+- **M4**:NodeWorkerJsHost + 三宿主 PluginRuntimeResolver + 核心全量对齐 + dsh agent 融合证明(agent/agent-loop/system-prompt 真实经桥跑通)。
+- **M5**:配置驱动加载(PluginLoaderService,cordis.yml 兼容,Java/Node 混排,随时替换/组合/热更新)。
+- **M6(规划)**:多模块拆分(dsh-cordis 核心/dsh-js-host/dsh-reload/dsh-loader/dsh-host)+ 发布 dsh-cordis 到 Maven + PluginTestKit。
+- **之后**:一步一步把 dsh harness 组件替换成 Java(重量 OS 件 shell/sandbox/code-runtime 留 Node worker,Java 化部分 llm/mcp/编排逐步替换)。NEEDS 落地(真实 dsh llm/tools/settings 装进 worker)。
 
 ## 参考
 
