@@ -213,6 +213,31 @@ class DshCliTest {
     }
 
     @Test
+    void bootOnceLoadsDshProfileBundles() throws Exception {
+        // M6-6:dsh profile(manifest dsh.profile.bundles)→ 组合 bundle patch → loader 加载
+        Path root = tmp.resolve("profiles");
+        Files.createDirectories(root.resolve("web/node_modules/@test/demo-bundle"));
+        Files.writeString(root.resolve("web").resolve("package.json"),
+                "{\"name\":\"dsh-profile-web\",\"private\":true,\"dsh\":{\"profile\":{\"bundles\":[\"@test/demo-bundle\"]}}}");
+        Files.writeString(root.resolve("web/node_modules/@test/demo-bundle/package.json"),
+                "{\"name\":\"@test/demo-bundle\",\"version\":\"0.0.1\",\"dsh\":{\"bundle\":{\"patch\":\"./cordis.patch.yml\"}}}");
+        Files.writeString(root.resolve("web/node_modules/@test/demo-bundle/cordis.patch.yml"), """
+                - insert:
+                    - id: greeter
+                      name: './greeter.js'
+                """);
+        Files.writeString(root.resolve("web").resolve("greeter.js"),
+                "module.exports = { name: 'greeter', apply(ctx) { ctx.emit('greeter/up'); } }");
+
+        ProfileBoot boot = new ProfileBoot(root, tmp);
+        try (ProfileBoot.Handle h = boot.bootOnce("web", System.out)) {
+            assertThat(h.loaded()).hasSize(1);
+            assertThat(h.loaded().get(0).entry().name()).isEqualTo("greeter");
+            assertThat(h.loaded().get(0).kind()).isEqualTo(HostKind.GRAAL);
+        }
+    }
+
+    @Test
     void bootOnceMissingProfileThrows() {
         ProfileBoot boot = new ProfileBoot(tmp.resolve("profiles"), tmp);
         assertThatThrownBy(() -> boot.bootOnce("nope", System.out))

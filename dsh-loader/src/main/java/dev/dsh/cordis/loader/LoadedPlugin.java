@@ -55,9 +55,9 @@ public final class LoadedPlugin implements AutoCloseable {
         return watcher != null && watcher.changed();
     }
 
-    /** 注册进 registry(开始 fiber)。 */
+    /** 注册进 registry(开始 fiber),透传条目的 {@code config}(dsh profile 组合行 M6-6)。 */
     public void register(Context ctx) {
-        ctx.registry.plugin(ctx, plugin, null);
+        ctx.registry.plugin(ctx, plugin, entry.config());
     }
 
     /** 从 registry 卸载(dispose fiber)并释放底层资源(JS 宿主 / Java 隔离 ClassLoader)。 */

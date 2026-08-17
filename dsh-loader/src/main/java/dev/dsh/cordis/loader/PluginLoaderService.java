@@ -97,7 +97,22 @@ public final class PluginLoaderService implements AutoCloseable {
     /** 读 cordis.yml → 注册全部条目;任一条目失败(含 apply 抛错被吞) → 全部回滚(未注册)并抛出。 */
     public synchronized List<LoadedPlugin> load(Path yml) throws Exception {
         setConfig(yml);
-        List<Entry> entries = EntryTree.parse(configFile).flatten();
+        return loadAndRegister(EntryTree.parse(configFile).flatten());
+    }
+
+    /**
+     * 直接加载一条 entry 列表(非 yml 源,M6-6 dsh profile 组合行):注册全部条目,
+     * 任一条目失败 → 全部回滚(未注册)并抛出。{@code baseDir} 为相对引用/npm 说明符的
+     * 解析基准(通常 = profile 目录)。无配置文件可热监听(entries 热更新是后续职责)。
+     */
+    public synchronized List<LoadedPlugin> loadEntries(List<Entry> entries, Path baseDir) throws Exception {
+        this.configFile = null;
+        this.baseDir = (baseDir == null) ? Path.of(".") : baseDir.toAbsolutePath().normalize();
+        return loadAndRegister(entries);
+    }
+
+    /** 共享的"全部加载 + 全部注册 + 校验生效 + 刷新监听"流程(load / loadEntries 复用)。 */
+    private List<LoadedPlugin> loadAndRegister(List<Entry> entries) throws Exception {
         List<LoadedPlugin> next = loadAll(entries);     // 先全部加载(失败 → 释放已建宿主)
         try {
             for (LoadedPlugin lp : next) {
@@ -490,6 +505,7 @@ public final class PluginLoaderService implements AutoCloseable {
 
     private void refreshConfigWatchers() {
         configWatchers.clear();
+        if (configFile == null) return;     // 非 yml 源(profile 组合行)无配置文件可监听
         try {
             for (Path p : EntryTree.parse(configFile).sources()) {
                 configWatchers.put(p, new FileWatcher(p));

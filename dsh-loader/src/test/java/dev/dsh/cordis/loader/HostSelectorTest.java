@@ -69,6 +69,29 @@ class HostSelectorTest {
     }
 
     @Test
+    void npmSpecifierResolvesThroughNodeModulesWalk() throws Exception {
+        // M6-6 dsh profile 组合行的 npm 模块说明符:baseDir 字面量不存在 → node_modules 上行查找
+        Path pkg = tmp.resolve("app/node_modules/@deepseek-ai/dsh-llm");
+        Files.createDirectories(pkg);
+        Files.writeString(pkg.resolve("package.json"), "{\"name\":\"@deepseek-ai/dsh-llm\",\"main\":\"index.js\"}");
+        Files.writeString(pkg.resolve("index.js"), "module.exports = { name: 'llm', apply(ctx) {} }");
+        HostSelector sel = new HostSelector();
+        ResolvedEntry re = sel.select(new Entry("llm", "@deepseek-ai/dsh-llm", null, null),
+                tmp.resolve("app"));
+        assertThat(re.explicit()).isFalse();
+        assertThat(re.kind()).isEqualTo(HostKind.GRAAL);   // 纯 JS 包 → Graal
+        assertThat(re.abs()).isEqualTo(pkg.toAbsolutePath().normalize());
+    }
+
+    @Test
+    void npmSpecifierWithoutInstallKeepsLiteralPath() {
+        // 找不到时保持字面路径(加载期报清晰错误),不静默改判
+        HostSelector sel = new HostSelector();
+        ResolvedEntry re = sel.select(new Entry("llm", "@deepseek-ai/absent", null, null), tmp);
+        assertThat(re.abs()).isEqualTo(tmp.resolve("@deepseek-ai/absent").toAbsolutePath().normalize());
+    }
+
+    @Test
     void sourceWithoutPrefixAutoDetectsNodeForEsm() throws Exception {
         Path js = tmp.resolve("esm.mjs");
         Files.writeString(js, "export function apply(ctx) {}");

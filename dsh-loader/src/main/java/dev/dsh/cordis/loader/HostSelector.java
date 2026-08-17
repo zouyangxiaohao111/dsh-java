@@ -86,6 +86,13 @@ public final class HostSelector {
         // ④ 无前缀 → PluginRuntimeResolver 自动检测(缓存 + 运行时兜底由加载方保留)
         if (kind == null) {
             Path candidate = baseDir.resolve(ref).normalize();
+            // M6-6 dsh profile 组合行的模块说明符(如 @deepseek-ai/dsh-llm)经 node_modules
+            // 上行查找解析(createRequire.resolve.paths 等价):字面量不存在时从 baseDir 上行
+            // 检查 node_modules/<ref>。找不到则保持原路径(加载期报清晰错误)。
+            if (!Files.exists(candidate)) {
+                Path viaNodeModules = resolveFromNodeModules(baseDir, ref);
+                if (viaNodeModules != null) candidate = viaNodeModules;
+            }
             kind = resolver.detect(candidate);
             return new ResolvedEntry(entry, kind, false, ref, candidate);
         }
@@ -100,6 +107,22 @@ public final class HostSelector {
         }
         Path abs = baseDir.resolve(ref).normalize();
         return new ResolvedEntry(entry, kind, explicit, ref, abs);
+    }
+
+    /**
+     * 从 {@code baseDir} 上行查找 {@code node_modules/<ref>}(Node createRequire.resolve.paths
+     * 等价);找到返回其绝对路径,找不到返回 null。用于 dsh profile 组合行的 npm 模块说明符
+     * (如 {@code @deepseek-ai/dsh-llm})。与 {@link DshProfileReader#packageDirFromAnchor}
+     * 同构,这里是模块根查找而非 bundle 解析。
+     */
+    static Path resolveFromNodeModules(Path baseDir, String ref) {
+        Path dir = baseDir.toAbsolutePath().normalize();
+        while (dir != null) {
+            Path candidate = dir.resolve("node_modules").resolve(ref).normalize();
+            if (Files.exists(candidate)) return candidate;
+            dir = dir.getParent();
+        }
+        return null;
     }
 
     /** 解析 JS 插件路径为入口文件:目录 → package.json {@code main}(回退 index.js/cjs/mjs)。 */

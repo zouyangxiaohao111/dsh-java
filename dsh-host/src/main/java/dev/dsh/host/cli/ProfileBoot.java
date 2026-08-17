@@ -3,6 +3,8 @@ package dev.dsh.host.cli;
 import dev.dsh.cordis.Context;
 import dev.dsh.cordis.js.JsHostFactory;
 import dev.dsh.cordis.js.PluginRuntimeResolver;
+import dev.dsh.cordis.loader.DshProfileReader;
+import dev.dsh.cordis.loader.Entry;
 import dev.dsh.cordis.loader.LoadedPlugin;
 import dev.dsh.cordis.loader.PluginLoaderService;
 import dev.dsh.cordis.reload.UrlPluginClassLoaderFactory;
@@ -93,23 +95,36 @@ public final class ProfileBoot {
         if (profile == null || profile.isBlank()) {
             throw new BootException("--profile needs a name");
         }
-        Path yml = profilesRoot.resolve(profile).resolve("cordis.yml");
-        if (!Files.isRegularFile(yml)) {
+        Path profileDir = profilesRoot.resolve(profile);
+        Path yml = profileDir.resolve("cordis.yml");
+        if (!Files.isRegularFile(yml) && !DshProfileReader.isDshProfile(profileDir)) {
             throw new BootException("profile '" + profile + "' not found under " + profilesRoot
-                    + " (create " + profilesRoot + "/" + profile + "/cordis.yml, or set DSH_HOME)");
+                    + " (create " + profileDir + "/cordis.yml, a dsh profile package.json with"
+                    + " dsh.profile.bundles, or set DSH_HOME)");
         }
         // 裸模块解析基址(seam):vendor/dsh 子模块 node_modules + profile node_modules
         List<Path> bases = new ArrayList<>();
         addIfDirectory(bases, repoRoot.resolve("vendor/dsh/node_modules"));
-        addIfDirectory(bases, profilesRoot.resolve(profile).resolve("node_modules"));
+        addIfDirectory(bases, profileDir.resolve("node_modules"));
 
         Context root = new Context();
         PluginLoaderService loader = new PluginLoaderService(root,
                 new PluginRuntimeResolver(new JsHostFactory(bases)),
                 new UrlPluginClassLoaderFactory(), outputDir(), new JsHostFactory(bases));
         try {
-            List<LoadedPlugin> loaded = loader.load(yml);
-            out.println("dshj: profile '" + profile + "' booted (" + yml + "):");
+            List<LoadedPlugin> loaded;
+            if (Files.isRegularFile(yml)) {
+                // M6-4 起始形状:cordis.yml(Java harness 插件树)
+                loaded = loader.load(yml);
+                out.println("dshj: profile '" + profile + "' booted (" + yml + "):");
+            } else {
+                // M6-6 dsh profile:读 manifest → 组合 bundle patch 层 → entries → loader 加载。
+                // bundle 第一 anchor = vendor/dsh 安装(package.json);缺则仅 profile 自身。
+                Path installAnchor = repoRoot.resolve("vendor/dsh/package.json");
+                List<Entry> entries = new DshProfileReader().load(profileDir, installAnchor);
+                loaded = loader.loadEntries(entries, profileDir);
+                out.println("dshj: profile '" + profile + "' booted (dsh profile " + profileDir + "):");
+            }
             for (LoadedPlugin lp : loaded) {
                 out.println("  - " + lp.entry().name() + "  [" + lp.kind() + "]  " + lp.ref());
             }
