@@ -1,6 +1,17 @@
-# dshj web profile — M6-4 起始形状:Java harness 插件树。
-# dsh 完整 web bundle(@deepseek-ai/dsh-base + @deepseek-ai/dsh-web-app)经 vendor/dsh 子模块
-# 加载是 M6-5/6;这里先声明一个最小可 boot 的 Java 插件集,验证 ./dshj web boot 端到端。
+# dshj web profile — M6-4 起始形状:Java harness 插件树 + M6-5b 真实 dsh 插件经桥加载。
+#
+# counter:      Java harness 插件(本地演示)。
+# system-prompt: vendor/dsh 子模块里的真实 @deepseek-ai/dsh-system-prompt 包,经 Node 桥加载。
+#                bridge 的 resolve 钩子把它的 '@deepseek-ai/cordis' import 拦到 Java 桥 shim,
+#                因此 SystemPrompt extends Service 的 super(ctx,'systemPrompt') 把服务注册进
+#                Java 核心。前置:vendor/dsh 已 setup(./setup.sh 或 node scripts/strip-dsh-libs.mjs
+#                构建 lib/),否则 boot 会报 "no JS entry file found"。
 plugins:
   - name: counter
     source: java:dev.dsh.demo.CounterPlugin
+  - name: system-prompt
+    source: node:../../vendor/dsh/packages/core/system-prompt
+    config:
+      includeHarnessIdentity: true
+      includeRuntimeContext: false
+      persona: 'You are the deployment persona.'

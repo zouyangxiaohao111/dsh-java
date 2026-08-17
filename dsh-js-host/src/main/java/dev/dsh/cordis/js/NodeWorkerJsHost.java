@@ -99,11 +99,17 @@ public final class NodeWorkerJsHost implements JsHost {
      * @param moduleBases 附加裸模块解析基址;null/空 = 保持原生解析
      */
     public NodeWorkerJsHost(Path requireCwd, List<Path> moduleBases) throws IOException {
-        this.bridgeScript = extractBridge();
+        Path runtimeDir = Files.createTempDirectory("dsh-node-runtime");
+        this.bridgeScript = extractResource("js/node-bridge.js", runtimeDir.resolve("node-bridge.js"));
+        Path shim = extractResource("js/cordis-shim.mjs", runtimeDir.resolve("cordis-shim.mjs"));
+        // M6-5b:node-bridge.js 经 module.register 注册 resolve 钩子(node-resolve-hook.cjs,
+        // 与 bridge 同目录),把 @deepseek-ai/cordis 拦到 shim;shim 路径经环境变量传入。
+        extractResource("js/node-resolve-hook.cjs", runtimeDir.resolve("node-resolve-hook.cjs"));
         ProcessBuilder pb = new ProcessBuilder(nodeExecutable(), bridgeScript.toAbsolutePath().toString());
         if (requireCwd != null && !requireCwd.toString().isEmpty()) {
             pb.directory(requireCwd.toAbsolutePath().toFile());
         }
+        pb.environment().put("DSH_CORDIS_SHIM", shim.toAbsolutePath().normalize().toString());
         if (moduleBases != null && !moduleBases.isEmpty()) {
             String joined = moduleBases.stream()
                     .filter(Objects::nonNull)
@@ -130,14 +136,13 @@ public final class NodeWorkerJsHost implements JsHost {
         return env != null && !env.isBlank() ? env : "node";
     }
 
-    /** 从 classpath 抽取 bridge 脚本到临时文件(Node 无法直接加载 classpath 资源)。 */
-    private static Path extractBridge() throws IOException {
-        try (InputStream is = NodeWorkerJsHost.class.getClassLoader().getResourceAsStream("js/node-bridge.js")) {
-            if (is == null) throw new IllegalStateException("cannot find js/node-bridge.js on classpath");
-            Path tmp = Files.createTempFile("dsh-node-bridge-", ".js");
-            Files.copy(is, tmp, StandardCopyOption.REPLACE_EXISTING);
-            tmp.toFile().deleteOnExit();
-            return tmp;
+    /** 从 classpath 抽取一个资源到目标路径(Node 无法直接加载 classpath 资源);文件退出时清理。 */
+    private static Path extractResource(String resource, Path target) throws IOException {
+        try (InputStream is = NodeWorkerJsHost.class.getClassLoader().getResourceAsStream(resource)) {
+            if (is == null) throw new IllegalStateException("cannot find " + resource + " on classpath");
+            Files.copy(is, target, StandardCopyOption.REPLACE_EXISTING);
+            target.toFile().deleteOnExit();
+            return target;
         }
     }
 

@@ -36,21 +36,23 @@ run_pnpm --version >/dev/null
 echo "[dshj setup] 3/4 安装 dsh workspace 依赖(vendor/dsh/node_modules)..."
 run_pnpm install
 
-echo "[dshj setup] 4/4 核查 dsh 插件解析方式(读 package.json main/bin + 实际探测)..."
-# dsh 包的 exports/main 指向 lib/(构建产物)。若代表性包(lib 目录)缺失 → 需要构建。
-NEED_BUILD=0
-SAMPLE="packages/boot/app-boot"
-if [ -f "vendor/dsh/$SAMPLE/package.json" ]; then
-  MAIN=$(node -e "const p=require('$DIR/vendor/dsh/$SAMPLE/package.json'); process.stdout.write(String(p.main||''))" 2>/dev/null || true)
-  if [ -n "$MAIN" ] && [ ! -f "vendor/dsh/$SAMPLE/$MAIN" ]; then
-    NEED_BUILD=1
-  fi
-fi
-if [ "$NEED_BUILD" = "1" ]; then
-  echo "[dshj setup] dsh 包按 exports→lib 发布产物解析,lib/ 尚未构建 —— 运行 pnpm build:lib:host..."
-  run_pnpm build:lib:host
+echo "[dshj setup] 4/4 核查 dsh 插件解析方式(lib/ 构建产物)..."
+# dsh 包按 exports/main → lib/ 解析(构建产物),src/ 不能直接跑。M6-5b web profile 需要
+# system-prompt 闭包(cosmokit/schemastery/dsh-scope/system-prompt)的 lib。缺失时用
+# scripts/strip-dsh-libs.mjs 对该最小闭包做 type-strip 构建(复用 M4/M5 验证过的手段;
+# 产物写入 vendor/dsh 各包的 lib/,被子模块 .gitignore 忽略,不弄脏 submodule)。
+# 注:整仓 `pnpm build:lib:host`(tsc -b + tsdown)是 dsh 原生完整构建,但在本机子模块环境
+# 下会被 lefthook postinstall 与 typret lib 依赖阻断 —— strip 脚本是该场景的可靠替代。
+SYS_LIB="vendor/dsh/packages/core/system-prompt/lib/index.js"
+if [ -f "$SYS_LIB" ]; then
+  echo "[dshj setup] dsh 插件 lib 已构建,可直接解析。"
 else
-  echo "[dshj setup] dsh 插件可直接解析(lib 已存在或源码可跑),无需额外构建。"
+  echo "[dshj setup] system-prompt lib 缺失 —— 运行 scripts/strip-dsh-libs.mjs(type-strip 最小闭包)..."
+  node "$DIR/scripts/strip-dsh-libs.mjs" || {
+    echo "[dshj setup] 错误: strip-dsh-libs.mjs 失败。备选: 在 vendor/dsh 里跑"
+    echo "  pnpm build:lib:host(需先解决 lefthook postinstall / typret 前置)。"
+    exit 1
+  }
 fi
 
 echo

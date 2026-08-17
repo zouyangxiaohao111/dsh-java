@@ -84,9 +84,14 @@ git submodule update --init --depth 1   # 或 ./setup.sh(vendor/dsh = deepseek-h
 
 - `profiles/<name>/cordis.yml` 声明插件集;`$DSH_HOME` 可覆盖 profile 根(镜像 dsh)。
 - `./setup.sh` 一次性初始化:拉取 `vendor/dsh` 子模块 → `pnpm install`(corepack 锁
-  `pnpm@11.7.0`)→ 核查并构建 dsh 包 lib(`build:lib:host`)。目标是 **clone → setup → run**。
+  `pnpm@11.7.0`)→ 构建 system-prompt 闭包的 lib(`scripts/strip-dsh-libs.mjs`,type-strip
+  最小闭包;整仓 `build:lib:host` 在子模块环境会被 lefthook/typret 前置阻断)。目标是
+  **clone → setup → run**。
 - Node worker 把 `vendor/dsh/node_modules` + profile `node_modules` 作为裸模块解析基址
-  (bareModuleBaseUrl 等价物,`NodeWorkerJsHost` 的 `moduleBases` seam)。
+  (bareModuleBaseUrl 等价物,`NodeWorkerJsHost` 的 `moduleBases` seam);真实 dsh 插件的
+  `@deepseek-ai/cordis` import 被 bridge 的 resolve 钩子拦到 Java 桥 shim(M6-5b),其余
+  dsh 包从子模块 node_modules 原生解析。web profile 已加载真实
+  `@deepseek-ai/dsh-system-prompt`(经桥注册 `ctx.systemPrompt` 进 Java 核心)。
 
 一个最小示例——Java 提供服务,JS 插件调用并回传:
 

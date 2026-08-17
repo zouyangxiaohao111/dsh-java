@@ -25,6 +25,40 @@
 const fs = require('node:fs')
 const { Worker, isMainThread, workerData } = require('node:worker_threads')
 
+// ---- cordis → Java 桥 shim 解析拦截(M6-5b)----
+// 真实 dsh 插件(vendor/dsh 子模块)的 node_modules 里 @deepseek-ai/cordis 是 dsh 自己的
+// cordis,不是我们的 Java 桥 shim。NODE_PATH 是 fallback 不是 override,压不住本地 node_modules;
+// ESM 裸 import 更完全不走 NODE_PATH。这里注册 Node 内置 ESM loader 的 resolve 钩子:
+// 顶层裸 specifier '@deepseek-ai/cordis' → 我们的桥 shim(Service extends Java 核心注册),
+// 其余 dsh 包照常从 vendor/dsh 的 node_modules(pnpm workspace 符号链接)解析。
+// 另补 Module._resolveFilename 拦截,覆盖纯 CJS require('@deepseek-ai/cordis') 的路径。
+// 钩子文件与 shim 由 Java 侧(NodeWorkerJsHost)抽取到 bridge 同目录并经环境变量传入。
+const { register } = require('node:module')
+const { pathToFileURL } = require('node:url')
+
+const CORDIS_SPECIFIER = '@deepseek-ai/cordis'
+const cordisShimPath = process.env.DSH_CORDIS_SHIM
+
+if (cordisShimPath && cordisShimPath.length > 0) {
+  // 1) ESM loader resolve 钩子(import + require() 加载 ESM 的内部解析都经过它)。
+  //    shortCircuit:true → 优先级高于 vendor/dsh 树内本地 node_modules。
+  try {
+    register('./node-resolve-hook.cjs', pathToFileURL(__filename).href)
+  } catch (e) {
+    // 个别 Node 版本 register 失败时降级:进程内 resolve 钩子缺失 = shim 拦截失效,
+    // 但 worker 主循环仍可跑 —— 记到 stderr,Java 侧在插件加载失败时可诊断。
+    process.stderr.write('node-bridge: module.register failed (cordis shim interception disabled): '
+      + (e && e.message ? e.message : e) + '\n')
+  }
+  // 2) CJS require 路径的兜底拦截(纯 CJS 插件代码里 require('@deepseek-ai/cordis'))。
+  const Module = require('node:module')
+  const origResolveFilename = Module._resolveFilename
+  Module._resolveFilename = function (request, ...rest) {
+    if (request === CORDIS_SPECIFIER) return cordisShimPath
+    return origResolveFilename.call(this, request, ...rest)
+  }
+}
+
 // ---- 裸模块解析基址 seam(M6-4,bareModuleBaseUrl 等价物)----
 // 宿主(Java 侧 NodeWorkerJsHost)在 spawn 时把 dsh 子模块 node_modules + profile
 // node_modules 等基址经 NODE_PATH / DSH_MODULE_BASES 环境变量传给本进程。CJS require
@@ -499,6 +533,36 @@ function resolvePlugin(mod) {
   throw new Error('plugin module is neither a function nor { apply }')
 }
 
+// ---- Java 桥 shim 的 Service 基类判断(M6-5b 类插件语义)----
+// 懒加载 shim(经 DSH_CORDIS_SHIM 指向的 ESM 模块),用 prototype 链判断候选是不是
+// shim.Service 的子类。加载的 shim 与插件代码 import 到的是同一文件 → 同一模块实例,
+// 因此 `SystemPrompt.prototype instanceof Service` 能成立。
+let cordisShimPromise = null
+function loadCordisShim() {
+  if (!cordisShimPromise) {
+    if (!cordisShimPath || cordisShimPath.length === 0) {
+      cordisShimPromise = Promise.reject(new Error('DSH_CORDIS_SHIM not set; cannot resolve cordis shim for class plugins'))
+    } else {
+      cordisShimPromise = import(pathToFileURL(cordisShimPath).href)
+    }
+  }
+  return cordisShimPromise
+}
+
+/** 候选是否为 shim.Service 的子类(cordis 类插件:new Plugin(ctx, config) 实例化)。 */
+async function isServiceClass(candidate) {
+  if (typeof candidate !== 'function' || !candidate.prototype) return false
+  try {
+    const shim = await loadCordisShim()
+    const Service = shim && (shim.Service || shim.default && shim.default.Service)
+    if (typeof Service !== 'function') return false
+    return candidate.prototype instanceof Service
+  } catch (e) {
+    // shim 加载失败:不是类插件,落回普通 apply(让原错误路径报出更具体的插件错误)
+    return false
+  }
+}
+
 function pluginMeta(mod) {
   const source = resolvePlugin(mod).source
   const get = (key) => {
@@ -555,9 +619,17 @@ async function handleRequest(msg) {
       if (mod === undefined) throw new Error('unknown module handle ' + JSON.stringify(msg.module))
       const ctx = deserializeValue(msg.ctx)
       if (ctx === undefined) throw new Error('unknown ctx handle ' + JSON.stringify(msg.ctx))
-      const { apply } = resolvePlugin(mod)
+      const { apply, source } = resolvePlugin(mod)
       const config = deserializeValue(msg.config)
-      let result = apply(ctx, config)
+      // cordis 类插件语义(M6-5b):Service 子类(如 @deepseek-ai/dsh-system-prompt 的
+      // SystemPrompt 默认导出)经 `new Plugin(ctx, config)` 实例化 —— 构造器里
+      // super(ctx, name) 把服务注册进 Java 核心。普通函数/ {apply} 插件照旧 apply(ctx, config)。
+      let result
+      if (apply === source && await isServiceClass(source)) {
+        result = new source(ctx, config)
+      } else {
+        result = apply(ctx, config)
+      }
       if (result && typeof result.then === 'function') result = await result   // macrotask 可 settle
       return { type: 'result', id: msg.id, value: serializeValue(result) }
     }
