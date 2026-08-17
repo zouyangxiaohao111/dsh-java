@@ -1,0 +1,7 @@
+{
+  "name": "@dsh-java/fusion-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "M4 agent-fusion proof driver plugin. Runs inside the NodeWorkerJsHost worker and imports the four overlay packages by bare specifier: @deepseek-ai/cordis (shim), @deepseek-ai/dsh-llm, @deepseek-ai/dsh-session-projection, @deepseek-ai/dsh-session-stats."
+}

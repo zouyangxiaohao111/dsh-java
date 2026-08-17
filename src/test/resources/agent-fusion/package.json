@@ -1,0 +1,7 @@
+{
+  "name": "dsh-java-agent-fusion",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "node_modules overlay for the M4 agent-fusion proof: real dsh packages (@deepseek-ai/cordis shim + dsh-llm / dsh-session-projection / dsh-session-stats overlays) made requireable inside the NodeWorkerJsHost worker, with ctx bridged to the Java cordis core."
+}
