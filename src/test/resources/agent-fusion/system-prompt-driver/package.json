@@ -1,0 +1,7 @@
+{
+  "name": "@dsh-java/system-prompt-driver",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "M4 agent-fusion driver: instantiate the real @deepseek-ai/dsh-system-prompt SystemPrompt service (overlay) inside the NodeWorkerJsHost worker, register a prompt section + variable, and expose the service to the Java core over the node-bridge RPC."
+}

@@ -155,7 +155,51 @@ function makeCtx(ctxId) {
     provide: (name, value) => bridgeCall('ctxCall', { ctx: ctxId, method: 'provide', args: [name, serializeValue(value)] }),
     get: (name) => bridgeCall('ctxCall', { ctx: ctxId, method: 'get', args: [name] }),
     inject: (deps, cb) => bridgeCall('ctxCall', { ctx: ctxId, method: 'inject', args: [deps.map(x => serializeValue(x)), serializeValue(cb)] }),
-    effect: (disposer) => bridgeCall('ctxCall', { ctx: ctxId, method: 'effect', args: [serializeValue(disposer)] }),
+    // cordis 语义:effect body 立即执行,把产出的 disposer 交给 Java(生命周期归 Java fiber)。
+    // 支持 generator body(ScopedLayers.effect / sessionProjections.register 用):步进到首个
+    // yield,注册 yield 出的 disposer;disposal 时先跑 disposer 再 resume generator 尾部。
+    // 旧桥把 body 整体延后到 unload,generator 永远不跑 —— 无法支撑真实 dsh 注册表(表写入
+    // 在 generator 首个 yield 前),故改为立即步进。
+    effect: (body, label) => {
+      const stepped = body()
+      let disposer
+      let resume
+      if (stepped && typeof stepped.next === 'function' && typeof stepped[Symbol.iterator] === 'function') {
+        const iterator = stepped
+        const first = iterator.next()   // 运行 body 至首个 yield;重复名等错误在此抛给调用方
+        if (!first.done) {
+          if (typeof first.value === 'function') disposer = first.value
+          resume = () => { try { iterator.next() } catch (e) { /* generator 尾部不观察 */ } }
+        }
+      } else if (typeof stepped === 'function') {
+        disposer = stepped
+      }
+      if (typeof disposer !== 'function') return undefined
+      const registered = serializeValue(() => {
+        let result
+        try { result = disposer() } finally { if (resume) resume() }
+        return result
+      })
+      return bridgeCall('ctxCall', { ctx: ctxId, method: 'effect', args: [registered] })
+    },
+    // waterfall:Java 只回传该 dispatch 收纳的 JS listener fn 句柄(顺序),worker 本地直接调用,
+    // 无往返 —— 同步宿主在 bridgeCall 阻塞期间无法再同步调 JS 句柄,故 JS-only 链才能本地折叠。
+    // Java 原生(non-JS)listener 混入时 Java 侧抛明确错误(记 NEEDS)。
+    waterfall: (target, name, ...args) => {
+      const next = args[args.length - 1]
+      const payload = args.slice(0, -1)
+      const plan = bridgeCall('ctxCall', { ctx: ctxId, method: 'waterfallPlan', args: [serializeValue(target), name] })
+      const listeners = Array.isArray(plan) ? plan : []
+      const call = (idx) => {
+        if (idx >= listeners.length) return next(...payload)
+        let result = listeners[idx](...payload, () => call(idx + 1))
+        if (result && typeof result.then === 'function') result = syncWaitPromise(result, 'waterfall listener ' + name)
+        return result
+      }
+      let result = call(0)
+      if (result && typeof result.then === 'function') result = syncWaitPromise(result, 'waterfall ' + name)
+      return result
+    },
     logger: () => ({ error: () => {}, info: () => {}, warn: () => {}, debug: () => {} }),
     i18n: { define: () => {} },
     bots: { find: () => null },

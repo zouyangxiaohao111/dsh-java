@@ -464,7 +464,7 @@ public final class NodeWorkerJsHost implements JsHost {
         return toJsonNode(registerService(value));
     }
 
-    private ArrayNode toJsonArray(Object values) {
+    ArrayNode toJsonArray(Object values) {
         ArrayNode arr = mapper.createArrayNode();
         if (values instanceof Iterable<?> it) {
             for (Object v : it) arr.add(toJsonNode(v));

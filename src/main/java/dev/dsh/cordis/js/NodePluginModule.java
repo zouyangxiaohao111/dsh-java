@@ -38,15 +38,17 @@ public final class NodePluginModule implements PluginModule {
         NodeWorkerBridge bridge = new NodeWorkerBridge(host, ctx);
         // worker 侧建 ctx shim(桥 id 与 ctx 绑定),再发 apply
         NodeRef ctxRef = host.createCtx(bridge);
-        Object result = host.applyPlugin(ref, ctxRef, config);
 
-        // 先注册 ctx 释放,再注册 disposer:effect 逆序执行 ⇒ disposer 先跑,ctx 后释放
-        // (disposer 里可能还会调 ctx.emit,若 ctx 已释放会报 "unknown ctx handle")。
+        // 先注册 ctx 释放(在 apply 之前),apply 内再注册 JS effects、之后注册 plugin disposer。
+        // fiber effect 逆序执行 ⇒ plugin disposer → JS effects → ctx 释放最后跑,JS disposer 里的
+        // ctx.emit(如 system-prompt 的 system-prompt/change)仍可达桥,不会 "unknown ctx handle"。
         NodeRef released = ctxRef;
         ctx.effect(() -> (Disposable) () -> {
             host.releaseCtx(released);
             return CompletableFuture.completedFuture(null);
         }, "node-js-ctx-release");
+
+        Object result = host.applyPlugin(ref, ctxRef, config);
 
         // JS 插件返回 disposer 函数 → 注册为 fiber effect(卸载时经 RPC 调用);
         // 跑完后释放跨桥 fn 句柄(disposer 语义上只跑一次)。

@@ -65,6 +65,8 @@ public final class NodeWorkerBridge {
                 return doInject(args);
             case "effect":
                 return doEffect(args);
+            case "waterfallPlan":
+                return doWaterfallPlan(args);
             case "commandRegister":
                 return doCommandRegister(args);
             default:
@@ -80,7 +82,9 @@ public final class NodeWorkerBridge {
         JsonNode opts = args.size() > 2 ? args.get(2) : null;
         boolean prepend = opts != null && opts.path("prepend").asBoolean(false);
         boolean global = opts != null && opts.path("global").asBoolean(false);
-        Events.Listener l = (c, evArgs) -> host.invokeListener(listener, evArgs);
+        // JsListener 携带跨桥 fn 句柄:worker 发起的 waterfall 经 waterfallPlan 按此分辨
+        // JS listener(本地折叠)与 Java 原生 listener(同步宿主无法折叠,抛 NEEDS)。
+        Events.Listener l = new JsListener(listener, (c, evArgs) -> host.invokeListener(listener, evArgs));
         Disposable disposable = once
                 ? ctx.once(name, l, new Events.EventOptions().prepend(prepend).global(global))
                 : ctx.on(name, l, new Events.EventOptions().prepend(prepend).global(global));
@@ -89,6 +93,31 @@ public final class NodeWorkerBridge {
         ctx.effect(() -> (Disposable) () -> disposable.dispose()
                 .thenRun(() -> host.releaseFn(listener)), "node-js-listener");
         return NullNode.instance;
+    }
+
+    /**
+     * Worker 发起 waterfall 时解析的 JS listener 计划:Java 只回传该事件收纳的 JS fn 句柄
+     * (dispatch 顺序)。worker 在本地直接调用这些 JS 函数(worker→JS,无跨桥往返),避免同步
+     * 宿主在 bridgeCall 阻塞期间再调 Java 句柄的死锁。
+     *
+     * <p>Java 原生(non-JS)listener 混入时无法同步折叠(worker 阻塞、native listener 需往返),
+     * 抛明确错误(记 NEEDS)。监听器的 context filter 近似为无过滤:worker 侧 target 载体经
+     * 序列化后仅余空对象,filter 为 undefined 时 {@code Events.dispatch} 对所有 hook 放行。
+     */
+    private JsonNode doWaterfallPlan(JsonNode args) {
+        String name = args.get(1).asText("");
+        List<Events.Listener> listeners = ctx.events.listenersFor(name, null);
+        List<NodeRef> refs = new ArrayList<>(listeners.size());
+        for (Events.Listener l : listeners) {
+            if (l instanceof JsListener js) {
+                refs.add(js.ref);
+            } else {
+                throw new NodeBridgeError("waterfall '" + name + "' has a Java-native listener; "
+                        + "the sync NodeWorkerJsHost can only fold JS listener chains synchronously "
+                        + "(NEEDS: worker-initiated waterfall over mixed listeners)");
+            }
+        }
+        return host.toJsonArray(refs);
     }
 
     private JsonNode doEmit(JsonNode args) {
@@ -211,5 +240,23 @@ public final class NodeWorkerBridge {
 
     /** 一条已注册命令的入口:参数模板、option 定义、action(远程函数句柄)。 */
     public record CommandEntry(String argDef, List<Map<String, Object>> options, NodeRef action) {
+    }
+
+    /**
+     * JS listener 的桥内驻留形式:携带跨桥 fn 句柄,转发调用到 worker。
+     * {@code doWaterfallPlan} 借此识别 JS listener(可本地折叠)与 Java 原生 listener。
+     */
+    private static final class JsListener implements Events.Listener {
+        final NodeRef ref;
+        private final java.util.function.BiFunction<Context, Object[], Object> invoke;
+
+        JsListener(NodeRef ref, java.util.function.BiFunction<Context, Object[], Object> invoke) {
+            this.ref = ref;
+            this.invoke = invoke;
+        }
+
+        @Override public Object call(Context ctx, Object... args) {
+            return invoke.apply(ctx, args);
+        }
     }
 }
