@@ -62,7 +62,7 @@ ctx.directoryPicker / ctx.typert(+connection.rpc.intercept、internal/service �
 |---|---|---|
 | `system-prompt` | **真实跑通** | `super(ctx,'systemPrompt')` 注册进 Java 核心;Java 触发真实 `assemble()`,合并结果回 Java |
 | `agent` | **真实跑通** | `AgentRegistry` 注册 `ctx.agents`;Java 触发 `register()` → `agent/created`/`agent/disposed` 回 Java;initiator 用 worker 内真 ALS |
-| `agent-loop` | **真实机器 + 真实 tools/settings,llm 真流经 runner** | turn/step 状态机真跑(llm.stream + session 日志回 Java);`ctx.settings` 已接真实 dsh-settings(M5),`ctx.llm` 已接真实 dsh-llm + dsh-llm-deepseek(M5-NEEDS-llm,真 fetch+SSE 经 runner 子进程),`ctx.tools` 已接真实 dsh-tools ToolRuntime(M5-NEEDS-tools,registry + TOOL_RUNTIME_SCHEDULER + 真实 echo executor,原生模式) |
+| `agent-loop` | **真实机器 + 真实 tools/settings;llm 真链路经独立 runner 演示** | turn/step 状态机真跑(llm.stream + session 日志回 Java);`ctx.settings` 已接真实 dsh-settings(M5),`ctx.tools` 已接真实 dsh-tools ToolRuntime(M5-NEEDS-tools,registry + TOOL_RUNTIME_SCHEDULER + 真实 echo executor,原生模式);**`ctx.llm.stream` 在 agent-loop 机器内仍为 Java canned 桩**——真实 dsh-llm + llm-deepseek 真 fetch+SSE 经独立 llm-driver + runner 子进程演示(非 agent-loop 机器内 seam,同步宿主 macrotask 限制,设计文档 4.1);live Agent/Session 跨桥仍 NEEDS |
 | `logging` | 未桥接 | 无独立包(即 ctx.logger);worker 侧 noop,未跨桥到 Java Logger 格式化层 |
 
 **NEEDS 清单(要"做到"需实现,均不需移植业务):**
