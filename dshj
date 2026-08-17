@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# dshj — dsh-java 命令行入口(M6-4)。调用 dsh-host 的 Gradle run。
+#
+# 用法(与 dsh 启动器同形):
+#   ./dshj [--profile <name>] boot [appArgs...]
+#   ./dshj web|headless|cli [boot] [appArgs...]
+#   ./dshj plugin --profile <name> add <spec>
+#   ./dshj --help
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 把每个参数做 shell-safe 引号包裹,喂给 Gradle run 的 --args(Gradle 按引号感知拆分)。
+# 参数里的双引号/反斜杠先转义,避免破坏 --args 的拆分边界。
+ARGS=""
+for a in "$@"; do
+  qa=$(printf '%s' "$a" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  ARGS="${ARGS} \"${qa}\""
+done
+# 去掉前导空格;空时显式给空串(Gradle run --args="" = 无参数)
+if [ -n "$ARGS" ]; then
+  ARGS="${ARGS# }"
+fi
+
+exec "$DIR/gradlew" -p "$DIR" -q :dsh-host:run --args="$ARGS"

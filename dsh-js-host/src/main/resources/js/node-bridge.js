@@ -25,6 +25,17 @@
 const fs = require('node:fs')
 const { Worker, isMainThread, workerData } = require('node:worker_threads')
 
+// ---- 裸模块解析基址 seam(M6-4,bareModuleBaseUrl 等价物)----
+// 宿主(Java 侧 NodeWorkerJsHost)在 spawn 时把 dsh 子模块 node_modules + profile
+// node_modules 等基址经 NODE_PATH / DSH_MODULE_BASES 环境变量传给本进程。CJS require
+// 在启动时把 NODE_PATH 读进 Module.globalPaths,使 worker 内任意 require('裸包')
+// (含插件代码内部、load 用的 require)都能经基址解析。基址必须是 **node_modules 目录
+// 本身**(模块根),不是其父目录 —— require 对每条 NODE_PATH 做 <base>/<specifier>
+// 的路径拼接(实测 Node 24:NODE_PATH=<dir> → require('pkg') 找 <dir>/pkg)。
+// 注:运行时再 push Module.globalPaths 无效(Node 24 只在启动 _initPaths 读一次),故不在此做。
+// ESM 裸 import 走 Node 原生解析(从模块文件目录向上找 node_modules),NODE_PATH 不生效:
+// ESM 插件应位于 profile/dsh 树内,让原生向上解析命中其 node_modules(这是 dsh 的 pnpm 布局)。
+
 // ---- 跨线程共享:stdin 行队列(reader 线程 → 主线程)----
 // 单槽乒乓协议。与 Java 侧 MAX_LINE_LENGTH(8MB)对齐;超长行截断并标记 OVERSIZE,
 // 主线程按 hostile 丢弃。

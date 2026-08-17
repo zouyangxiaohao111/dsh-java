@@ -1,0 +1,5 @@
+# dshj cli profile — M6-4 起始形状:Java harness 插件树。
+# dsh 完整 cli 聚合(命令交互)经 vendor/dsh 子模块加载是 M6-5/6。
+plugins:
+  - name: counter
+    source: java:dev.dsh.demo.CounterPlugin

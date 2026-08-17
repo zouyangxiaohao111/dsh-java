@@ -1,0 +1,6 @@
+# dshj web profile — M6-4 起始形状:Java harness 插件树。
+# dsh 完整 web bundle(@deepseek-ai/dsh-base + @deepseek-ai/dsh-web-app)经 vendor/dsh 子模块
+# 加载是 M6-5/6;这里先声明一个最小可 boot 的 Java 插件集,验证 ./dshj web boot 端到端。
+plugins:
+  - name: counter
+    source: java:dev.dsh.demo.CounterPlugin

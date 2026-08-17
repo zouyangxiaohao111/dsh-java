@@ -71,6 +71,22 @@ cd dsh-java
 > (可通过环境变量 `NODE` 指定路径)。无 Node 时依赖它的测试会被 JUnit Assumption 自动
 > **skip**(构建保持全绿),③ 宿主对应的插件加载会在运行时报错;①② 宿主与 Java 插件不受影响。
 
+## CLI(`./dshj`)+ 链接 dsh 真源(M6)
+
+```sh
+git submodule update --init --depth 1   # 或 ./setup.sh(vendor/dsh = deepseek-harness 真源)
+./dshj --help                            # 帮助(web/headless/cli 任意 profile)
+./dshj web boot                          # boot 默认 web profile(Java harness)
+./dshj --profile headless boot           # 指定 profile
+./dshj plugin --profile web add <spec>   # 插件 add 骨架(jar:/java: 安装是 M6-7)
+```
+
+- `profiles/<name>/cordis.yml` 声明插件集;`$DSH_HOME` 可覆盖 profile 根(镜像 dsh)。
+- `./setup.sh` 一次性初始化:拉取 `vendor/dsh` 子模块 → `pnpm install`(corepack 锁
+  `pnpm@11.7.0`)→ 核查并构建 dsh 包 lib(`build:lib:host`)。目标是 **clone → setup → run**。
+- Node worker 把 `vendor/dsh/node_modules` + profile `node_modules` 作为裸模块解析基址
+  (bareModuleBaseUrl 等价物,`NodeWorkerJsHost` 的 `moduleBases` seam)。
+
 一个最小示例——Java 提供服务,JS 插件调用并回传:
 
 ```java

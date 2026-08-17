@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -25,12 +26,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 
 /**
  * Node worker 版 {@link JsHost}:spawn 一个真 Node 进程跑 {@code js/node-bridge.js},
@@ -73,14 +76,43 @@ public final class NodeWorkerJsHost implements JsHost {
     private volatile boolean closed;
 
     public NodeWorkerJsHost() throws IOException {
-        this(Path.of(""));
+        this(Path.of(""), List.of());
     }
 
     public NodeWorkerJsHost(Path requireCwd) throws IOException {
+        this(requireCwd, List.of());
+    }
+
+    /**
+     * 进程外 Node 宿主,带裸模块解析基址(M6-4 seam,等价 dsh 的 {@code bareModuleBaseUrl})。
+     *
+     * <p>{@code moduleBases} 为附加的裸模块解析基址,须是 <b>node_modules 目录本身</b>(模块根,
+     * 如 {@code vendor/dsh/node_modules}、{@code profiles/web/node_modules}),经
+     * {@code NODE_PATH}/{@code DSH_MODULE_BASES} 环境变量在 spawn 时传给 worker —— Node 启动时
+     * 把 NODE_PATH 读进 {@code Module.globalPaths},worker 内任意 {@code require('裸包')}(含插件
+     * 代码内部)都能经基址解析。注意 NODE_PATH 条目是"模块根"({@code <base>/<specifier>} 拼接),
+     * 不是 node_modules 的父目录。ESM 裸 {@code import} 走 Node 原生解析(从模块文件目录向上找
+     * node_modules),不受 NODE_PATH 影响 —— ESM 插件应位于 profile/dsh 树内以便原生向上解析
+     * 命中其 node_modules(见 node-bridge.js 注释)。
+     *
+     * @param requireCwd  插件模块的 require 基准目录(可为空)
+     * @param moduleBases 附加裸模块解析基址;null/空 = 保持原生解析
+     */
+    public NodeWorkerJsHost(Path requireCwd, List<Path> moduleBases) throws IOException {
         this.bridgeScript = extractBridge();
         ProcessBuilder pb = new ProcessBuilder(nodeExecutable(), bridgeScript.toAbsolutePath().toString());
         if (requireCwd != null && !requireCwd.toString().isEmpty()) {
             pb.directory(requireCwd.toAbsolutePath().toFile());
+        }
+        if (moduleBases != null && !moduleBases.isEmpty()) {
+            String joined = moduleBases.stream()
+                    .filter(Objects::nonNull)
+                    .map(p -> p.toAbsolutePath().normalize().toString())
+                    .collect(Collectors.joining(File.pathSeparator));
+            if (!joined.isEmpty()) {
+                pb.environment().put("NODE_PATH", joined);
+                pb.environment().put("DSH_MODULE_BASES", joined);
+            }
         }
         pb.redirectError(ProcessBuilder.Redirect.INHERIT);   // worker stderr 透传给宿主(诊断可见)
         this.process = pb.start();

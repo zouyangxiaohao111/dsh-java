@@ -1,0 +1,8 @@
+# 行尾策略(M6-4):显式覆盖 core.autocrlf,保证可移植性。
+# bash/shell 脚本必须 LF(CRLF 会破坏 #!/usr/bin/env bash 与执行);.bat 偏好 CRLF。
+*.sh text eol=lf
+gradlew text eol=lf
+dshj text eol=lf
+setup.sh text eol=lf
+gradlew.bat text eol=crlf
+dshj.bat text eol=crlf

@@ -75,9 +75,14 @@ public final class PluginLoaderService implements AutoCloseable {
         this(ctx, resolver, clFactory, outputDir, new JsHostFactory());
     }
 
-    /** 测试 seam:注入自定义宿主工厂(close-throw 等宿主行为注入)。 */
-    PluginLoaderService(Context ctx, PluginRuntimeResolver resolver, PluginClassLoaderFactory clFactory,
-                        Path outputDir, JsHostFactory hostFactory) {
+    /**
+     * 宿主工厂 seam:注入自定义 {@link JsHostFactory}(M6-4 应用层用它携带裸模块解析基址
+     * vendor/dsh/node_modules + profile/node_modules;测试也用 close-throw 等宿主行为注入)。
+     * 显式 {@code node:}/{@code graaljs:} 条目与 {@code hostFactory} 一致;resolver 内部的
+     * 自动检测路径用的是它自己的 hostFactory(调用方注入时两者都应带同一批基址)。
+     */
+    public PluginLoaderService(Context ctx, PluginRuntimeResolver resolver, PluginClassLoaderFactory clFactory,
+                               Path outputDir, JsHostFactory hostFactory) {
         this.ctx = ctx;
         this.resolver = resolver;
         this.selector = new HostSelector(resolver);
