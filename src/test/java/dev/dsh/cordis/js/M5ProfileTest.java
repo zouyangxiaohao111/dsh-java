@@ -24,10 +24,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <ul>
  *   <li>Java 插件(2):{@code java:dev.dsh.demo.CounterPlugin}、{@code java:dev.dsh.demo.SeamPlugin}
  *       (提供 {@code llm}/{@code tools} 服务 seam);</li>
- *   <li>dsh JS 插件(4,node: 宿主):require-probe / agent-loop / fusion
- *       (复用 agent-fusion overlay 的 node_modules)+ session-stats(补充 dsh-plugin/esm overlay,
- *       inject 融合插件的 {@code sessionProjections});agent-loop 内部再注册 systemPrompt /
- *       agents / sessions 服务。</li>
+ *   <li>dsh JS 插件(3,node: 宿主):require-probe / agent-loop / fusion
+ *       (复用 agent-fusion overlay 的 node_modules);fusion 内部同 worker mount 真实
+ *       session-stats({@code mountSessionStats},见 fusion-plugin);agent-loop 内部再注册
+ *       systemPrompt / agents / sessions 服务。注:session-stats 不单列为 node: 条目 ——
+ *       它 inject fusion 的 {@code sessionProjections},而每个 node: 插件跑独立 worker,
+ *       fusion 提供的值携带 worker 内 fn 句柄跨 worker 无法反序列化(基线静默吞掉该 apply
+ *       失败);跨 worker JS→JS 组合不在 M5 范围。</li>
  * </ul>
  *
  * <p>覆盖(M5 验收 1/3):
@@ -72,16 +75,16 @@ class M5ProfileTest {
         try {
             // ---- ① 混排加载:registry 全量 + 宿主选择 ----
             List<LoadedPlugin> loaded = loader.load(yml);
-            // loader 恰好管理配置声明的 6 个插件;registry 还含 dsh 包经 ctx.inject
-            // 注册的匿名插件(如 AgentRegistry 的 typert lookup),故 size >= 6 且逐个在册。
-            assertThat(root.registry.size()).isGreaterThanOrEqualTo(6);
-            assertThat(loaded).hasSize(6);
+            // loader 恰好管理配置声明的 5 个插件;registry 还含 dsh 包经 ctx.inject
+            // 注册的匿名插件(如 AgentRegistry 的 typert lookup),故 size >= 5 且逐个在册。
+            assertThat(root.registry.size()).isGreaterThanOrEqualTo(5);
+            assertThat(loaded).hasSize(5);
             assertThat(loader.entries()).extracting(Entry::name)
                     .containsExactly("counter", "seams", "require-probe",
-                            "agent-loop", "fusion", "session-stats");
+                            "agent-loop", "fusion");
             assertThat(root.registry.keys()).extracting(Plugin::name)
                     .contains("counter", "seams", "require-probe", "agent-loop-driver",
-                            "dsh-fusion-spike", "session-stats");
+                            "dsh-fusion-spike");
 
             // Java 插件 → JAVA 宿主;dsh JS 插件 → NODE 宿主(NodeWorkerJsHost)
             assertThat(loaded.get(0).kind()).isEqualTo(HostKind.JAVA);

@@ -5,11 +5,16 @@
 #   source: java:dev.dsh.demo.X   — Java 插件(类名,ClassLoader 加载)
 #   source: node:<路径>            — dsh JS 插件,显式走 NodeWorkerJsHost
 #
-# node: 插件复用 agent-fusion overlay 的 node_modules(../agent-fusion,已提交);
-# session-stats 补充使用 dsh-plugin/esm overlay(zod 由 npm install 重装,gitignored)。
-# 顺序即注册顺序:Java 提供者(seams)先于消费它的 agent-loop;fusion(提供
-# sessionProjections)先于注入它的 session-stats。agent-loop 内部已注册 systemPrompt/
-# agents/sessions 服务,故不单列 system-prompt-driver(避免 'systemPrompt' 重复注册)。
+# node: 插件复用 agent-fusion overlay 的 node_modules(../agent-fusion,已提交)。
+# 顺序即注册顺序:Java 提供者(seams)先于消费它的 agent-loop。agent-loop 内部已注册
+# systemPrompt/agents/sessions 服务,故不单列 system-prompt-driver(避免 'systemPrompt'
+# 重复注册)。
+#
+# 注:session-stats 不单列为 node: 条目 —— 它 inject fusion 的 sessionProjections,而每个
+# node: 插件跑在独立 worker 进程,fusion 提供的值携带 worker 内 fn 句柄,跨 worker 无法
+# 反序列化(基线静默吞掉该 apply 失败)。session-stats 由 fusion 插件内部同 worker
+# mountSessionStats() 装载(见 agent-fusion/fusion-plugin);跨 worker 的 JS→JS 组合不在
+# M5 范围(M5 组合验收 = Java provide → JS inject,见 design §4.3)。
 plugins:
   # ---- Java 插件(2)----
   - name: counter
@@ -23,6 +28,3 @@ plugins:
     source: node:../agent-fusion/agent-loop-driver
   - name: fusion
     source: node:../agent-fusion/fusion-plugin
-  # ---- dsh JS 插件(node:,补充 dsh-plugin/esm overlay)----
-  - name: session-stats
-    source: node:../dsh-plugin/esm/session-stats

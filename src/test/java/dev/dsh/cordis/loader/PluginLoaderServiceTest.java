@@ -278,6 +278,28 @@ class PluginLoaderServiceTest {
     }
 
     @Test
+    void loadWithApplyingPluginThrowsAndRegistersNothing() throws Exception {
+        // 初始加载:模块可加载但 apply() 抛错 → Fiber.reload 吞掉(状态 FAILED)→ load() 注册循环
+        // 须校验并上报,而非静默成功;全部回滚 → loaded 为空。
+        Files.writeString(tmp.resolve("greeter-bad.js"),
+                "module.exports = { name: 'greeter', provide: ['greet'], apply(ctx) { throw new Error('boom-apply'); } }");
+        Path yml = tmp.resolve("cordis.yml");
+        Files.writeString(yml, "plugins:\n  - name: greeter\n    path: ./greeter-bad.js\n");
+        Context root = new Context();
+        PluginLoaderService loader = new PluginLoaderService(root);
+        try {
+            assertThatThrownBy(() -> loader.load(yml))
+                    .isInstanceOf(Exception.class)
+                    .hasMessageContaining("apply failed");
+            assertThat(greet(root)).isNull();               // 未生效,不静默注册
+            assertThat(loader.loaded()).isEmpty();
+        } finally {
+            loader.dispose();
+            root.fiber.dispose().join();
+        }
+    }
+
+    @Test
     void reloadWithBrokenEntryKeepsOld() throws Exception {
         writeGreeter(tmp, "greeter.js", "v1", "greeter");
         Path yml = tmp.resolve("cordis.yml");
@@ -404,6 +426,55 @@ class PluginLoaderServiceTest {
         }
     }
 
+    @Test
+    void reloadRemovalWithNewEntryFailureRollsBackWholeBatch() throws Exception {
+        // 三条目变体:删除 b、替换 a(a→a2,可正常 apply)、新增 c-bad(apply 抛错)→ 靠后条目注册校验失败
+        // → 整批回滚:a-v1 与 b-v1 均恢复(含被删除条目),loaded 与 registry 不分裂。
+        Files.writeString(tmp.resolve("a.js"),
+                "module.exports = { name: 'a', provide: ['a-svc'], apply(ctx) { ctx.provide('a-svc', 'a-v1'); } }");
+        Files.writeString(tmp.resolve("a2.js"),
+                "module.exports = { name: 'a', provide: ['a-svc'], apply(ctx) { ctx.provide('a-svc', 'a-v2'); } }");
+        Files.writeString(tmp.resolve("b.js"),
+                "module.exports = { name: 'b', provide: ['b-svc'], apply(ctx) { ctx.provide('b-svc', 'b-v1'); } }");
+        Files.writeString(tmp.resolve("c-bad.js"),
+                "module.exports = { name: 'c', provide: ['c-svc'], apply(ctx) { throw new Error('boom-c'); } }");
+        Path yml = tmp.resolve("cordis.yml");
+        Files.writeString(yml, """
+                plugins:
+                  - name: a
+                    path: ./a.js
+                  - name: b
+                    path: ./b.js
+                """);
+        Context root = new Context();
+        PluginLoaderService loader = new PluginLoaderService(root);
+        try {
+            loader.load(yml);
+            assertThat(svc(root, "a-svc")).isEqualTo("a-v1");
+            assertThat(svc(root, "b-svc")).isEqualTo("b-v1");
+            List<LoadedPlugin> before = loader.loaded();
+
+            Files.writeString(yml, """
+                    plugins:
+                      - name: a
+                        path: ./a2.js
+                      - name: c
+                        path: ./c-bad.js
+                    """);
+            assertThatThrownBy(() -> loader.reload(yml))
+                    .isInstanceOf(Exception.class)
+                    .hasMessageContaining("apply failed");
+
+            assertThat(svc(root, "a-svc")).isEqualTo("a-v1");       // 替换的 a 回滚到 v1
+            assertThat(svc(root, "b-svc")).isEqualTo("b-v1");       // 被删除的 b 恢复
+            assertThat((Object) root.get("c-svc")).isNull();
+            assertThat(loader.loaded()).containsExactlyElementsOf(before);   // loaded 与 registry 一致
+        } finally {
+            loader.dispose();
+            root.fiber.dispose().join();
+        }
+    }
+
     // ---- dispose ----
 
     @Test
@@ -500,6 +571,40 @@ class PluginLoaderServiceTest {
             Files.writeString(yml, "plugins:\n  - name: greeter\n    source: graaljs:./greeter2.js\n");
             Thread.sleep(500);
             assertThat(greet(root)).isEqualTo("v2");
+        } finally {
+            loader.dispose();        // stopWatch + 卸载
+            root.fiber.dispose().join();
+        }
+    }
+
+    @Test
+    void backgroundWatchReportsReloadError() throws Exception {
+        // 守护线程热更新失败不再静默:可注入 onReloadError 处理器 + lastError() 上报;
+        // 失败已回滚 → 旧实现保留。
+        Path js = writeGreeter(tmp, "greeter.js", "v1", "greeter");
+        Path yml = tmp.resolve("cordis.yml");
+        Files.writeString(yml, "plugins:\n  - name: greeter\n    path: ./greeter.js\n");
+        Context root = new Context();
+        PluginLoaderService loader = new PluginLoaderService(root);
+        AtomicReference<Throwable> err = new AtomicReference<>();
+        try {
+            loader.load(yml);
+            assertThat(greet(root)).isEqualTo("v1");
+            loader.onReloadError(err::set);
+            loader.startWatch(50);
+            sleepMtime();
+
+            Files.writeString(js, "module.exports = { name: 'greeter', provide: ['greet'], apply(ctx) { throw new Error('boom-apply'); } }");
+            long deadline = System.currentTimeMillis() + 5000;
+            while (System.currentTimeMillis() < deadline && err.get() == null) {
+                Thread.sleep(20);
+            }
+            assertThat(err.get()).isNotNull();
+            assertThat(err.get().getMessage()).contains("apply failed");
+            assertThat(loader.lastError()).isNotNull();
+            assertThat(greet(root)).isEqualTo("v1");               // 旧实现保留
+            assertThat(loader.loaded()).hasSize(1);
+            assertThat(loader.loaded().get(0).ref()).endsWith("greeter.js");
         } finally {
             loader.dispose();        // stopWatch + 卸载
             root.fiber.dispose().join();

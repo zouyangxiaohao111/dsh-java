@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * 配置驱动加载(design §2 PluginLoaderService):读 cordis.yml → 条目树 → 逐条注册进 registry。
@@ -56,6 +57,8 @@ public final class PluginLoaderService implements AutoCloseable {
     private final List<LoadedPlugin> loaded = new ArrayList<>();
     private final Map<Path, FileWatcher> configWatchers = new HashMap<>();
     private Thread watcherThread;
+    private volatile Throwable lastError;         // 最近一次后台热更新失败(无失败为 null)
+    private volatile Consumer<Throwable> onReloadError;
 
     public PluginLoaderService(Context ctx) {
         this(ctx, new PluginRuntimeResolver(), new UrlPluginClassLoaderFactory(), defaultOutputDir());
@@ -73,13 +76,16 @@ public final class PluginLoaderService implements AutoCloseable {
 
     // ---- 一次性加载 ----
 
-    /** 读 cordis.yml → 注册全部条目;任一条目失败 → 全部回滚(未注册)并抛出。 */
+    /** 读 cordis.yml → 注册全部条目;任一条目失败(含 apply 抛错被吞) → 全部回滚(未注册)并抛出。 */
     public synchronized List<LoadedPlugin> load(Path yml) throws Exception {
         setConfig(yml);
         List<Entry> entries = EntryTree.parse(configFile).flatten();
         List<LoadedPlugin> next = loadAll(entries);     // 先全部加载(失败 → 释放已建宿主)
         try {
-            for (LoadedPlugin lp : next) lp.register(ctx);
+            for (LoadedPlugin lp : next) {
+                lp.register(ctx);
+                verifyFiber(lp, ctx);   // 初始加载同样校验 apply 实际生效(apply 抛错被 Fiber.reload 吞掉 → 状态 FAILED)
+            }
         } catch (Exception e) {
             for (LoadedPlugin lp : next) lp.unregister(ctx);   // 注册期失败 → 卸载已注册的
             throw e;
@@ -143,7 +149,8 @@ public final class PluginLoaderService implements AutoCloseable {
         return false;
     }
 
-    /** 启动后台守护线程周期轮询 {@link #updateIfChanged()};{@link #dispose()}/{@link #close()} 自动停止。 */
+    /** 启动后台守护线程周期轮询 {@link #updateIfChanged()};{@link #dispose()}/{@link #close()} 自动停止。
+     *  热更新失败(已回滚旧态)经 {@link #lastError()} / {@link #onReloadError(Consumer)} 上报,不再静默吞掉。 */
     public synchronized void startWatch(long intervalMillis) {
         if (watcherThread != null) return;
         watcherThread = new Thread(() -> {
@@ -153,7 +160,7 @@ public final class PluginLoaderService implements AutoCloseable {
                     try {
                         updateIfChanged();
                     } catch (Exception e) {
-                        // 重载失败已回滚旧态;静默留待上层观察
+                        reportReloadError(e);
                     }
                 }
             } catch (InterruptedException e) {
@@ -169,6 +176,33 @@ public final class PluginLoaderService implements AutoCloseable {
         if (watcherThread != null) {
             watcherThread.interrupt();
             watcherThread = null;
+        }
+    }
+
+    /** 注入热更新失败处理器:后台轮询线程每次重载失败(已回滚旧态)回调它;处理器内部异常被隔离,不影响轮询。 */
+    public void onReloadError(Consumer<Throwable> handler) {
+        this.onReloadError = handler;
+    }
+
+    /** 最近一次后台热更新失败;无失败返回 null。 */
+    public Throwable lastError() {
+        return lastError;
+    }
+
+    /** 清除记录的最近失败(便于连续观测)。 */
+    public synchronized void clearError() {
+        this.lastError = null;
+    }
+
+    private void reportReloadError(Throwable e) {
+        this.lastError = e;
+        Consumer<Throwable> handler = this.onReloadError;
+        if (handler != null) {
+            try {
+                handler.accept(e);
+            } catch (Throwable ignored) {
+                // 处理器自身异常不得中断轮询
+            }
         }
     }
 
@@ -325,12 +359,13 @@ public final class PluginLoaderService implements AutoCloseable {
             rollbackBatch(byName, removed, registered, pending, ctx);
             throw ex;
         }
-        // 提交:新实现生效 — 关闭被替换/移除条目的旧宿主,批量替换 loaded 引用。
+        // 提交:新实现生效 — 关闭被替换/移除条目的旧宿主(逐个守卫,失败记日志不中断;
+        // 新实现已在 registry 生效,旧宿主关闭仅清理,不得阻断 loaded 引用替换)。
         for (LoadedPlugin np : next.values()) {
             LoadedPlugin old = byName.get(np.entry().name());
-            if (np != old && old != null) old.close();
+            if (np != old && old != null) closeQuietly(old);
         }
-        for (LoadedPlugin cur : removed) cur.close();
+        for (LoadedPlugin cur : removed) closeQuietly(cur);
         loaded.clear();
         loaded.addAll(next.values());
     }
@@ -366,6 +401,15 @@ public final class PluginLoaderService implements AutoCloseable {
         if (latest.state == FiberState.FAILED || err != null) {
             throw new IllegalStateException("plugin apply failed: " + np.entry().name()
                     + " (" + (err != null ? err.getMessage() : latest.state) + ")", err);
+        }
+    }
+
+    /** 关闭旧宿主并吞掉关闭期异常(记日志),供提交期清理使用。 */
+    private void closeQuietly(LoadedPlugin lp) {
+        try {
+            lp.close();
+        } catch (Throwable t) {
+            ctx.logger().error(t);
         }
     }
 
