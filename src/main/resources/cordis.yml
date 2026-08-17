@@ -1,0 +1,8 @@
+# M5 项目 profile:声明插件集,由 PluginLoaderService 读取并注册进 registry。
+# 格式 = dsh cordis.yml 兼容 + Java 扩展(design §2.1):
+#   path    — dsh 写法,JS 插件路径(经桥)
+#   source  — 带 java:/node:/graaljs: 前缀的扩展写法;无前缀则经 PluginRuntimeResolver 自动检测宿主
+#   include — include 子集(先 include 后本地,同名本地覆盖)
+plugins:
+  - name: counter
+    source: java:dev.dsh.demo.CounterPlugin

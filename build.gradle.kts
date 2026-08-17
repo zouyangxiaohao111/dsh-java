@@ -11,6 +11,7 @@ repositories {
 
 dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind:2.18.2")
+    implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.18.2")
     implementation("org.graalvm.polyglot:polyglot:24.1.1")
     implementation("org.graalvm.polyglot:js:24.1.1")
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
