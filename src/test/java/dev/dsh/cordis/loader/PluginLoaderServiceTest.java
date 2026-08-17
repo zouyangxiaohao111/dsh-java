@@ -4,15 +4,22 @@ import dev.dsh.cordis.Context;
 import dev.dsh.cordis.js.GraalJsHost;
 import dev.dsh.cordis.js.HostKind;
 import dev.dsh.cordis.js.JsCtxBridge;
+import dev.dsh.cordis.js.JsHost;
+import dev.dsh.cordis.js.JsHostFactory;
 import dev.dsh.cordis.js.NodeWorkerJsHost;
+import dev.dsh.cordis.js.PluginModule;
+import dev.dsh.cordis.js.PluginRuntimeResolver;
+import dev.dsh.cordis.reload.UrlPluginClassLoaderFactory;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyExecutable;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -658,6 +665,181 @@ class PluginLoaderServiceTest {
             assertThat(loaded.get(0).kind()).isEqualTo(HostKind.NODE);
             root.emit("go");
             assertThat(got.get()).isEqualTo("auto-node");
+        } finally {
+            loader.dispose();
+            root.fiber.dispose().join();
+        }
+    }
+
+    // ---- close-throw 守卫:宿主 close() 抛错不得掩盖根因 / 阻断 loaded 提交 ----
+
+    /** 测试宿主工厂:可注入"close 抛错"行为;记录每个被 close 的宿主(含抛错前)。 */
+    static final class ThrowOnCloseFactory extends JsHostFactory {
+        volatile boolean throwOnClose;
+        final List<JsHost> closed = new ArrayList<>();
+
+        @Override
+        public JsHost create(HostKind kind, Path requireCwd) throws IOException {
+            JsHost real = super.create(kind, requireCwd);
+            return new JsHost() {
+                @Override public PluginModule eval(String script) { return real.eval(script); }
+                @Override public PluginModule require(String specifier) { return real.require(specifier); }
+                @Override public PluginModule loadModule(Path file) { return real.loadModule(file); }
+                @Override public void close() {
+                    closed.add(this);
+                    try { real.close(); }
+                    finally { if (throwOnClose) throw new IllegalStateException("close-boom"); }
+                }
+            };
+        }
+    }
+
+    @Test
+    void reloadWithOldHostCloseThrowingStillCommitsNewPlugin() throws Exception {
+        // applyDiff 提交期:旧宿主 close() 抛错 → closeQuietly 吞掉 → loaded 仍替换为新插件
+        writeGreeter(tmp, "greeter.js", "v1", "greeter");
+        writeGreeter(tmp, "greeter2.js", "v2", "greeter2");
+        Path yml = tmp.resolve("cordis.yml");
+        Files.writeString(yml, "plugins:\n  - name: greeter\n    source: graaljs:./greeter.js\n");
+        Context root = new Context();
+        ThrowOnCloseFactory factory = new ThrowOnCloseFactory();
+        PluginLoaderService loader = new PluginLoaderService(
+                root, new PluginRuntimeResolver(), new UrlPluginClassLoaderFactory(), tmp, factory);
+        try {
+            loader.load(yml);
+            assertThat(greet(root)).isEqualTo("v1");
+            JsHost oldHost = loader.loaded().get(0).host();
+
+            factory.throwOnClose = true;                       // 旧宿主 close 抛错
+            Files.writeString(yml, "plugins:\n  - name: greeter\n    source: graaljs:./greeter2.js\n");
+            loader.reload(yml);                                // 不抛:close 被守卫
+            factory.throwOnClose = false;
+
+            assertThat(greet(root)).isEqualTo("v2");           // 新实现已生效
+            assertThat(loader.loaded()).hasSize(1);
+            assertThat(loader.loaded().get(0).ref()).endsWith("greeter2.js");
+            assertThat(factory.closed).contains(oldHost);      // 旧宿主已 close(即使抛错也被调用)
+        } finally {
+            loader.dispose();
+            root.fiber.dispose().join();
+        }
+    }
+
+    @Test
+    void updateIfChangedWithOldHostCloseThrowingStillCommitsNewPlugin() throws Exception {
+        // reloadPlugin 提交期(原裸 old.close()):旧宿主 close() 抛错 → 守卫后 loaded.set 仍执行
+        Path js = writeGreeter(tmp, "greeter.js", "v1", "greeter");
+        Path yml = tmp.resolve("cordis.yml");
+        Files.writeString(yml, "plugins:\n  - name: greeter\n    source: graaljs:./greeter.js\n");
+        Context root = new Context();
+        ThrowOnCloseFactory factory = new ThrowOnCloseFactory();
+        PluginLoaderService loader = new PluginLoaderService(
+                root, new PluginRuntimeResolver(), new UrlPluginClassLoaderFactory(), tmp, factory);
+        try {
+            loader.load(yml);
+            assertThat(greet(root)).isEqualTo("v1");
+            JsHost oldHost = loader.loaded().get(0).host();
+            sleepMtime();
+
+            factory.throwOnClose = true;                       // 旧宿主 close 抛错
+            Files.writeString(js, greeterSource("v2", "greeter"));
+            sleepMtime();
+            assertThat(loader.updateIfChanged()).isTrue();     // 不抛:close 被守卫
+            factory.throwOnClose = false;
+
+            assertThat(greet(root)).isEqualTo("v2");           // 新实现已生效
+            assertThat(loader.loaded()).hasSize(1);
+            assertThat(factory.closed).contains(oldHost);      // 旧宿主已 close(即使抛错也被调用)
+            assertThat(loader.loaded().get(0).host()).isNotSameAs(oldHost);
+        } finally {
+            loader.dispose();
+            root.fiber.dispose().join();
+        }
+    }
+
+    @Test
+    void loadWithBrokenEntryAndHostCloseThrowingKeepsRootCause() throws Exception {
+        // loadAll 清理:后续条目加载失败 → 已建宿主 close() 抛错不得掩盖根因("nope.js")
+        writeGreeter(tmp, "greeter.js", "v1", "greeter");
+        Path yml = tmp.resolve("cordis.yml");
+        Files.writeString(yml, """
+                plugins:
+                  - name: greeter
+                    source: graaljs:./greeter.js
+                  - name: missing
+                    path: ./nope.js
+                """);
+        Context root = new Context();
+        ThrowOnCloseFactory factory = new ThrowOnCloseFactory();
+        factory.throwOnClose = true;                             // 已建宿主 close 抛错
+        PluginLoaderService loader = new PluginLoaderService(
+                root, new PluginRuntimeResolver(), new UrlPluginClassLoaderFactory(), tmp, factory);
+        try {
+            assertThatThrownBy(() -> loader.load(yml))
+                    .isInstanceOf(Exception.class)
+                    .hasMessageContaining("nope.js");            // 根因原样传播,close 抛错不掩盖
+            assertThat(loader.loaded()).isEmpty();
+        } finally {
+            loader.dispose();
+            root.fiber.dispose().join();
+        }
+    }
+
+    @Test
+    void loadWithApplyFailureAndHostCloseThrowingKeepsRootCause() throws Exception {
+        // load() 注册循环清理:apply 抛错(verifyFiber 失败)后 unregister 时宿主 close 抛错
+        // 不得掩盖根因("apply failed")
+        Files.writeString(tmp.resolve("greeter-bad.js"),
+                "module.exports = { name: 'greeter', provide: ['greet'], apply(ctx) { throw new Error('boom-apply'); } }");
+        Path yml = tmp.resolve("cordis.yml");
+        Files.writeString(yml, "plugins:\n  - name: greeter\n    source: graaljs:./greeter-bad.js\n");
+        Context root = new Context();
+        ThrowOnCloseFactory factory = new ThrowOnCloseFactory();
+        factory.throwOnClose = true;                             // 清理时宿主 close 抛错
+        PluginLoaderService loader = new PluginLoaderService(
+                root, new PluginRuntimeResolver(), new UrlPluginClassLoaderFactory(), tmp, factory);
+        try {
+            assertThatThrownBy(() -> loader.load(yml))
+                    .isInstanceOf(Exception.class)
+                    .hasMessageContaining("apply failed");       // 根因原样传播,close 抛错不掩盖
+            assertThat(loader.loaded()).isEmpty();
+        } finally {
+            loader.dispose();
+            root.fiber.dispose().join();
+        }
+    }
+
+    @Test
+    void reloadWithNewEntryFailureAndHostCloseThrowingKeepsRootCause() throws Exception {
+        // applyDiff Phase A 清理:新增/变更条目加载失败 → 已建新宿主 close 抛错不得掩盖根因("nope.js")
+        writeGreeter(tmp, "greeter.js", "v1", "greeter");
+        writeGreeter(tmp, "greeter2.js", "v2", "greeter2");
+        Path yml = tmp.resolve("cordis.yml");
+        Files.writeString(yml, "plugins:\n  - name: greeter\n    source: graaljs:./greeter.js\n");
+        Context root = new Context();
+        ThrowOnCloseFactory factory = new ThrowOnCloseFactory();
+        PluginLoaderService loader = new PluginLoaderService(
+                root, new PluginRuntimeResolver(), new UrlPluginClassLoaderFactory(), tmp, factory);
+        try {
+            loader.load(yml);
+            assertThat(greet(root)).isEqualTo("v1");
+            List<LoadedPlugin> before = loader.loaded();
+
+            factory.throwOnClose = true;
+            Files.writeString(yml, """
+                    plugins:
+                      - name: greeter
+                        source: graaljs:./greeter2.js
+                      - name: missing
+                        path: ./nope.js
+                    """);
+            assertThatThrownBy(() -> loader.reload(yml))
+                    .isInstanceOf(Exception.class)
+                    .hasMessageContaining("nope.js");            // 根因原样传播,close 抛错不掩盖
+            factory.throwOnClose = false;
+
+            assertThat(greet(root)).isEqualTo("v1");              // 旧实现保留(Phase A 失败未提交)
+            assertThat(loader.loaded()).containsExactlyElementsOf(before);
         } finally {
             loader.dispose();
             root.fiber.dispose().join();

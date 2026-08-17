@@ -61,17 +61,23 @@ public final class PluginLoaderService implements AutoCloseable {
     private volatile Consumer<Throwable> onReloadError;
 
     public PluginLoaderService(Context ctx) {
-        this(ctx, new PluginRuntimeResolver(), new UrlPluginClassLoaderFactory(), defaultOutputDir());
+        this(ctx, new PluginRuntimeResolver(), new UrlPluginClassLoaderFactory(), defaultOutputDir(), new JsHostFactory());
     }
 
     public PluginLoaderService(Context ctx, PluginRuntimeResolver resolver, PluginClassLoaderFactory clFactory, Path outputDir) {
+        this(ctx, resolver, clFactory, outputDir, new JsHostFactory());
+    }
+
+    /** 测试 seam:注入自定义宿主工厂(close-throw 等宿主行为注入)。 */
+    PluginLoaderService(Context ctx, PluginRuntimeResolver resolver, PluginClassLoaderFactory clFactory,
+                        Path outputDir, JsHostFactory hostFactory) {
         this.ctx = ctx;
         this.resolver = resolver;
         this.selector = new HostSelector(resolver);
         this.compiler = new PluginCompiler();
         this.clFactory = clFactory;
         this.outputDir = outputDir;
-        this.hostFactory = new JsHostFactory();
+        this.hostFactory = hostFactory;
     }
 
     // ---- 一次性加载 ----
@@ -87,7 +93,7 @@ public final class PluginLoaderService implements AutoCloseable {
                 verifyFiber(lp, ctx);   // 初始加载同样校验 apply 实际生效(apply 抛错被 Fiber.reload 吞掉 → 状态 FAILED)
             }
         } catch (Exception e) {
-            for (LoadedPlugin lp : next) lp.unregister(ctx);   // 注册期失败 → 卸载已注册的
+            for (LoadedPlugin lp : next) quietlyUnregister(lp, ctx);   // 注册期失败 → 卸载已注册的(close 抛错不掩盖根因)
             throw e;
         }
         loaded.clear();
@@ -231,7 +237,7 @@ public final class PluginLoaderService implements AutoCloseable {
             for (Entry e : entries) staged.add(loadPlugin(e));
             return staged;
         } catch (Exception ex) {
-            for (LoadedPlugin lp : staged) lp.close();
+            for (LoadedPlugin lp : staged) closeQuietly(lp);
             throw ex;
         }
     }
@@ -326,7 +332,7 @@ public final class PluginLoaderService implements AutoCloseable {
                 next.put(e.name(), np);
             }
         } catch (Exception ex) {
-            for (LoadedPlugin lp : staged) lp.close();
+            for (LoadedPlugin lp : staged) closeQuietly(lp);
             throw ex;
         }
 
@@ -380,11 +386,11 @@ public final class PluginLoaderService implements AutoCloseable {
             np.register(ctx);
             verifyFiber(np, ctx);
         } catch (Exception ex) {
-            np.unregister(ctx);                  // 释放新 handle(fiber + 宿主)
+            quietlyUnregister(np, ctx);          // 释放新 handle(fiber + 宿主;close 抛错不掩盖 apply 根因)
             try { old.register(ctx); } catch (Exception ignored) { }
             throw ex;
         }
-        old.close();                             // 提交:新实现生效,关闭旧宿主
+        closeQuietly(old);                       // 提交:新实现生效,关闭旧宿主(close 抛错不阻断 loaded 替换)
         loaded.set(index, np);
     }
 
@@ -413,11 +419,20 @@ public final class PluginLoaderService implements AutoCloseable {
         }
     }
 
+    /** 卸载已注册句柄并吞掉卸载期异常(记日志),供注册/apply 失败清理使用 —— close 抛错不得掩盖根因异常。 */
+    private static void quietlyUnregister(LoadedPlugin lp, Context ctx) {
+        try {
+            lp.unregister(ctx);
+        } catch (Throwable t) {
+            ctx.logger().error(t);
+        }
+    }
+
     /** 整批回滚:释放已注册/注册失败的新句柄,恢复所有被替换与被移除条目的旧实现(宿主保留中)。 */
     private static void rollbackBatch(Map<String, LoadedPlugin> byName, List<LoadedPlugin> removed,
                                       List<LoadedPlugin> registered, LoadedPlugin pending, Context ctx) {
-        if (pending != null) pending.unregister(ctx);            // 未通过校验/注册失败的新句柄
-        for (LoadedPlugin np : registered) np.unregister(ctx);   // 已注册成功的新句柄
+        if (pending != null) quietlyUnregister(pending, ctx);            // 未通过校验/注册失败的新句柄
+        for (LoadedPlugin np : registered) quietlyUnregister(np, ctx);   // 已注册成功的新句柄
         Set<LoadedPlugin> restore = new LinkedHashSet<>(removed);
         for (LoadedPlugin np : registered) {
             LoadedPlugin old = byName.get(np.entry().name());
