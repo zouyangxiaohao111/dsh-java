@@ -3,10 +3,29 @@ package dev.dsh.cordis.loader;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.BooleanNode;
+import com.fasterxml.jackson.databind.node.DoubleNode;
+import com.fasterxml.jackson.databind.node.IntNode;
+import com.fasterxml.jackson.databind.node.LongNode;
+import com.fasterxml.jackson.databind.node.NullNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.ShortNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
+import org.yaml.snakeyaml.LoaderOptions;
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.AbstractConstruct;
+import org.yaml.snakeyaml.constructor.SafeConstructor;
+import org.yaml.snakeyaml.nodes.Node;
+import org.yaml.snakeyaml.nodes.ScalarNode;
+import org.yaml.snakeyaml.nodes.Tag;
+
 import java.io.IOException;
+import java.io.Reader;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -41,14 +60,39 @@ import java.util.Map;
  * {@code loadEntries} 消费)。未启用行(disabled 为真 / 非空 JS 表达式,保守跳过)与
  * group 容器行不产出;{@code config} 透传到 {@link Entry#config()}。
  *
- * <p><b>JS 表达式({@code !!js})</b>:Jackson/SnakeYAML 把它解析成普通字符串
- * (如 {@code dshHomePath('sessions')})。config 里的表达式原样透传(加载期求值属
- * 运行时桥职责,M6-5);{@code disabled} 里的表达式无法在 Java 侧求值 → 保守当作未启用
- * 跳过(宁可少载一个插件,也不误启一个本应关闭的插件)。
+ * <p><b>JS 表达式({@code !!js})</b>:patch 解析用 SnakeYAML 自定义构造器,把 {@code !!js}
+ * 标量(如 {@code dshHomePath('sessions')})解析成显式标记对象
+ * {@code {"$dshJs": "<expr>"}}(不裸传字符串,防 config 通道把它当普通文本)。config 里的
+ * 标记原样透传到 worker,由 worker 侧在 apply 前求值(M7-5,node-bridge.js 的
+ * {@code evalJsMarkers};scope = process + dshHomePath);{@code disabled} 里的表达式无法在
+ * Java 侧求值 → 保守当作未启用跳过(宁可少载一个插件,也不误启一个本应关闭的插件)。
  */
 public final class DshProfileReader {
 
     private static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory());
+
+    /** 显式标记对象里 !!js 表达式的键(不裸传字符串,防 config 通道把它当普通文本)。 */
+    public static final String JS_EXPR_KEY = "$dshJs";
+
+    /** SnakeYAML 的 {@code !!js} 显式 tag(!! 前缀展开为全局 tag)。 */
+    private static final Tag JS_TAG = new Tag("tag:yaml.org,2002:js");
+
+    /** !!js 表达式标记:Java 侧无法求值,标记后原样透传,worker 侧求值。 */
+    private record JsExpression(String expr) {
+    }
+
+    /** SnakeYAML 构造器:!!js 标量 → JsExpression 标记;其余按安全默认解析。 */
+    private static final class JsTagConstructor extends SafeConstructor {
+        JsTagConstructor(LoaderOptions opts) {
+            super(opts);
+            this.yamlConstructors.put(JS_TAG, new AbstractConstruct() {
+                @Override
+                public Object construct(Node node) {
+                    return new JsExpression(((ScalarNode) node).getValue());
+                }
+            });
+        }
+    }
 
     /** dsh home 下的 profile 目录名。 */
     public static final String PROFILES_DIR = "profiles";
@@ -267,26 +311,24 @@ public final class DshProfileReader {
         return out;
     }
 
-    /** disabled 判定:布尔真、或非空字符串(!!js 表达式,Java 侧无法求值 → 保守跳过)。 */
+    /** disabled 判定:布尔真、或非空字符串、或 !!js 标记对象(Java 侧无法求值 → 保守跳过)。 */
     private static boolean isDisabled(JsonNode row) {
         JsonNode d = row.get("disabled");
         if (d == null || d.isNull() || d.isMissingNode()) return false;
         if (d.isBoolean()) return d.asBoolean();
         if (d.isTextual()) return !d.asText().trim().isEmpty();
+        // !!js 标记对象:Java 侧无法求值 → 保守跳过(宁可少载,不误启本应关闭的插件)
+        if (d.isObject()) return true;
         return d.asBoolean(false);
     }
 
-    /** 把 patch 列表解析为 JsonNode 数组;非顶层数组/非法行 → fail loud(镜像 dsh)。 */
+    /** 把 patch 列表解析为 JsonNode 数组;非顶层数组/非法行 → fail loud(镜像 dsh)。
+     *  {@code !!js} 标量经 {@link JsTagConstructor} 标记为 {@code {"$dshJs": expr}}。 */
     private static List<JsonNode> readPatchList(Path file) throws IOException {
         if (!Files.isRegularFile(file)) {
             throw new IOException("dsh overlay not found: " + file);
         }
-        JsonNode root;
-        try {
-            root = YAML.readTree(file.toFile());
-        } catch (IOException e) {
-            throw new IOException("failed to parse dsh overlay " + file + ": " + e.getMessage(), e);
-        }
+        JsonNode root = readPatchYaml(file);
         if (root == null || !root.isArray()) {
             throw new IOException("dsh overlay " + file + " must be a top-level YAML array of loader patch entries");
         }
@@ -298,6 +340,56 @@ public final class DshProfileReader {
             out.add(n);
         }
         return out;
+    }
+
+    /** 经 SnakeYAML 读 patch YAML(允许 !!js 全局 tag 进自定义构造器),转 Jackson JsonNode 树。 */
+    private static JsonNode readPatchYaml(Path file) throws IOException {
+        LoaderOptions opts = new LoaderOptions();
+        opts.setTagInspector(tag -> true);   // 允许 !!js 全局 tag 到达自定义构造器
+        Yaml yaml = new Yaml(new JsTagConstructor(opts));
+        Object root;
+        try (Reader r = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            root = yaml.load(r);
+        } catch (IOException e) {
+            throw new IOException("failed to parse dsh overlay " + file + ": " + e.getMessage(), e);
+        } catch (RuntimeException e) {
+            throw new IOException("failed to parse dsh overlay " + file + ": " + e.getMessage(), e);
+        }
+        return toJsonNode(root);
+    }
+
+    /** SnakeYAML 对象树 → Jackson JsonNode;{@link JsExpression} 标记 → {@code {$dshJs: expr}} 对象节点。 */
+    private static JsonNode toJsonNode(Object value) {
+        if (value == null) return NullNode.getInstance();
+        if (value instanceof JsExpression je) {
+            ObjectNode marker = YAML.createObjectNode();
+            marker.put(JS_EXPR_KEY, je.expr());
+            return marker;
+        }
+        if (value instanceof String s) return TextNode.valueOf(s);
+        if (value instanceof Boolean b) return BooleanNode.valueOf(b);
+        if (value instanceof Integer i) return IntNode.valueOf(i);
+        if (value instanceof Long l) return LongNode.valueOf(l);
+        if (value instanceof Short sh) return ShortNode.valueOf(sh.shortValue());
+        if (value instanceof Byte by) return ShortNode.valueOf(by.shortValue());
+        if (value instanceof BigInteger bi) return YAML.getNodeFactory().numberNode(bi);
+        if (value instanceof BigDecimal bd) return YAML.getNodeFactory().numberNode(bd);
+        if (value instanceof Double d) return DoubleNode.valueOf(d);
+        if (value instanceof Float f) return DoubleNode.valueOf(f.doubleValue());
+        if (value instanceof Map<?, ?> m) {
+            ObjectNode o = YAML.createObjectNode();
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                o.set(String.valueOf(e.getKey()), toJsonNode(e.getValue()));
+            }
+            return o;
+        }
+        if (value instanceof List<?> l) {
+            ArrayNode a = YAML.createArrayNode();
+            for (Object item : l) a.add(toJsonNode(item));
+            return a;
+        }
+        // 其余(日期等)→ 字符串原样(与 Jackson YAML 的字符串化行为对齐)
+        return TextNode.valueOf(String.valueOf(value));
     }
 
     private static JsonNode readManifest(Path file) throws IOException {

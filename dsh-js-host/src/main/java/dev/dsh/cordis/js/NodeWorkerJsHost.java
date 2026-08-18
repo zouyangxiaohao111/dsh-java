@@ -76,11 +76,11 @@ public final class NodeWorkerJsHost implements JsHost {
     private volatile boolean closed;
 
     public NodeWorkerJsHost() throws IOException {
-        this(Path.of(""), List.of());
+        this(Path.of(""), List.of(), Map.of());
     }
 
     public NodeWorkerJsHost(Path requireCwd) throws IOException {
-        this(requireCwd, List.of());
+        this(requireCwd, List.of(), Map.of());
     }
 
     /**
@@ -99,6 +99,20 @@ public final class NodeWorkerJsHost implements JsHost {
      * @param moduleBases 附加裸模块解析基址;null/空 = 保持原生解析
      */
     public NodeWorkerJsHost(Path requireCwd, List<Path> moduleBases) throws IOException {
+        this(requireCwd, moduleBases, Map.of());
+    }
+
+    /**
+     * 进程外 Node 宿主,带裸模块解析基址 + 额外传给 worker 的环境变量(M7-5 seam)。
+     *
+     * <p>{@code extraEnv} 追加到 worker 进程环境(如测试注入 {@code DSH_HOME} 以验证
+     * {@code !!js} 表达式的 {@code process.env} 求值;叠加在默认继承的环境之上)。
+     *
+     * @param requireCwd  插件模块的 require 基准目录(可为空)
+     * @param moduleBases 附加裸模块解析基址;null/空 = 保持原生解析
+     * @param extraEnv    额外传给 worker 进程的环境变量;null/空 = 无
+     */
+    public NodeWorkerJsHost(Path requireCwd, List<Path> moduleBases, Map<String, String> extraEnv) throws IOException {
         Path runtimeDir = Files.createTempDirectory("dsh-node-runtime");
         this.bridgeScript = extractResource("js/node-bridge.js", runtimeDir.resolve("node-bridge.js"));
         Path shim = extractResource("js/cordis-shim.mjs", runtimeDir.resolve("cordis-shim.mjs"));
@@ -119,6 +133,10 @@ public final class NodeWorkerJsHost implements JsHost {
                 pb.environment().put("NODE_PATH", joined);
                 pb.environment().put("DSH_MODULE_BASES", joined);
             }
+        }
+        // M7-5:额外环境变量(测试注入 DSH_HOME 等,验证 worker 侧 !!js 的 process.env 求值)
+        if (extraEnv != null) {
+            extraEnv.forEach(pb.environment()::put);
         }
         pb.redirectError(ProcessBuilder.Redirect.INHERIT);   // worker stderr 透传给宿主(诊断可见)
         this.process = pb.start();

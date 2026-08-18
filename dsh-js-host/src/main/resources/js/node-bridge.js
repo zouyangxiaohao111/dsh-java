@@ -23,6 +23,8 @@
 'use strict'
 
 const fs = require('node:fs')
+const nodePath = require('node:path')
+const nodeOs = require('node:os')
 const { Worker, isMainThread, workerData } = require('node:worker_threads')
 
 // ---- cordis → Java 桥 shim 解析拦截(M6-5b)----
@@ -578,6 +580,93 @@ function pluginMeta(mod) {
   }
 }
 
+// ---- M7-5 配置通道:!!js 求值 + schemastery/zod Config 默认化 ----
+// 根因(M7-4 实证):Java loader 把 config 原样传(不跑插件 static Config 默认化,
+// 也不求值 !!js),真实 dsh 插件的 Config 用 schemastery(可调用 schema)或 zod(.parse)。
+// 这里在 worker 侧 apply 之前补齐;失败一律回退原 config —— 绝不因默认化失败挂掉加载。
+
+/** 取插件模块的 static Config(schemastery schema / zod schema / 普通 transform)。 */
+function getPluginConfig(mod) {
+  const source = resolvePlugin(mod).source
+  for (const c of [mod, source, mod && mod.default]) {
+    if (c != null && c.Config !== undefined) return c.Config
+  }
+  return undefined
+}
+
+/**
+ * 按 schema 默认化 config:
+ *   - schemastery 形状(可调用函数)→ Config(raw ?? {});
+ *   - zod 形状(有 .parse)→ Config.parse(raw ?? {});
+ *   - 两者都不是 / 调用抛错 → 回退原 config(记日志),绝不因默认化失败挂掉加载。
+ */
+function defaultConfig(Config, raw) {
+  if (Config == null) return raw
+  const input = raw == null ? {} : raw
+  try {
+    if (typeof Config === 'function') return Config(input)                              // schemastery
+    if (typeof Config === 'object' && typeof Config.parse === 'function') {
+      return Config.parse(input)                                                        // zod
+    }
+    return raw
+  } catch (e) {
+    process.stderr.write('node-bridge: config defaulting failed, using raw config: '
+      + (e && e.message ? e.message : e) + '\n')
+    return raw
+  }
+}
+
+// ---- !!js 求值 scope(镜像 dsh Loader 的求值 scope:process + dshHomePath)----
+
+/** dsh-home-paths 的 resolveDshHome 等价物:$DSH_HOME(非空)否则 ~/.dsh。 */
+function resolveDshHome() {
+  const env = process.env.DSH_HOME
+  let selected = (env !== undefined && String(env).trim().length > 0)
+    ? env
+    : nodePath.join(nodeOs.homedir(), '.dsh')
+  if (selected === '~') selected = nodeOs.homedir()
+  else if (selected.startsWith('~/') || selected.startsWith('~\\')) {
+    selected = nodePath.join(nodeOs.homedir(), selected.slice(2))
+  }
+  return nodePath.resolve(selected)
+}
+
+/** dshHomePath(...segments):DSH_HOME(或 ~/.dsh)根下的路径拼接(@deepseek-ai/dsh-home-paths 等价物)。 */
+function dshHomePath(...segments) {
+  return nodePath.join(resolveDshHome(), ...segments)
+}
+
+/** 求值一个 !!js 表达式;scope = process + dshHomePath(与真实 dsh Loader 的求值面一致)。 */
+function evalJsExpression(expr) {
+  const fn = new Function('process', 'dshHomePath', '"use strict"; return (' + expr + ')\n')
+  return fn(process, dshHomePath)
+}
+
+/**
+ * 递归求值 config 里的 !!js 标记值({$dshJs: expr} → 求值结果)。Java 侧(DshProfileReader)
+ * 把 YAML 的 {@code !!js} 标量解析成显式标记对象(不裸传字符串)。求值失败 → 保守处理:
+ * 记日志 + 该值按表达式原文保留(插件读到字符串,不挂加载)。
+ */
+function evalJsMarkers(value) {
+  if (Array.isArray(value)) return value.map(evalJsMarkers)
+  if (value !== null && typeof value === 'object') {
+    const keys = Object.keys(value)
+    if (keys.length === 1 && keys[0] === '$dshJs' && typeof value.$dshJs === 'string') {
+      try {
+        return evalJsExpression(value.$dshJs)
+      } catch (e) {
+        process.stderr.write('node-bridge: !!js eval failed for "' + value.$dshJs + '": '
+          + (e && e.message ? e.message : e) + '; keeping expression as-is\n')
+        return value.$dshJs
+      }
+    }
+    const out = {}
+    for (const k of keys) out[k] = evalJsMarkers(value[k])
+    return out
+  }
+  return value
+}
+
 // ---- Java → worker 请求处理(异步:await 插件结果,解锁 macrotask)----
 async function handleRequest(msg) {
   switch (msg.type) {
@@ -620,7 +709,10 @@ async function handleRequest(msg) {
       const ctx = deserializeValue(msg.ctx)
       if (ctx === undefined) throw new Error('unknown ctx handle ' + JSON.stringify(msg.ctx))
       const { apply, source } = resolvePlugin(mod)
-      const config = deserializeValue(msg.config)
+      // M7-5 配置通道:先求值 config 里的 !!js 标记值,再按插件 static Config 默认化。
+      // 两者失败都回退原 config(带日志),不因默认化失败挂掉加载。
+      let config = evalJsMarkers(deserializeValue(msg.config))
+      config = defaultConfig(getPluginConfig(mod), config)
       // cordis 类插件语义(M6-5b):Service 子类(如 @deepseek-ai/dsh-system-prompt 的
       // SystemPrompt 默认导出)经 `new Plugin(ctx, config)` 实例化 —— 构造器里
       // super(ctx, name) 把服务注册进 Java 核心。普通函数/ {apply} 插件照旧 apply(ctx, config)。

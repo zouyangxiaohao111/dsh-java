@@ -1,5 +1,7 @@
 package dev.dsh.cordis.loader;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 import dev.dsh.cordis.Context;
 import dev.dsh.cordis.js.HostKind;
 import org.junit.jupiter.api.Assumptions;
@@ -202,8 +204,10 @@ class DshProfileReaderTest {
 
         List<Entry> entries = new DshProfileReader().load(home().resolve("profiles/test"), installAnchor());
         assertThat(entries).hasSize(1);
-        // !!js 标量被解析为普通字符串原样透传(求值属运行时职责)
-        assertThat(entries.get(0).config().path("root").asText()).isEqualTo("dshHomePath('storages')");
+        // !!js 标量被解析成显式标记对象 {$dshJs: expr}(M7-5,不裸传字符串),worker 侧求值
+        JsonNode root = entries.get(0).config().path("root");
+        assertThat(root.isObject()).isTrue();
+        assertThat(root.path(DshProfileReader.JS_EXPR_KEY).asText()).isEqualTo("dshHomePath('storages')");
     }
 
     @Test
@@ -348,8 +352,8 @@ class DshProfileReaderTest {
         Map<String, Entry> byId = entries.stream().collect(Collectors.toMap(Entry::name, e -> e));
         // 核心行都在
         assertThat(byId).containsKeys("timer", "hmr", "llm", "session", "agent", "web", "settings", "tools");
-        // 配置透传为字符串(!!js 表达式原样)
-        assertThat(byId.get("session-persistence-jsonl").config().path("root").asText())
+        // 配置里的 !!js 表达式透传为标记对象 {$dshJs: expr}(M7-5,worker 侧求值)
+        assertThat(byId.get("session-persistence-jsonl").config().path("root").path(DshProfileReader.JS_EXPR_KEY).asText())
                 .isEqualTo("dshHomePath('sessions')");
         // 带 disabled 表达式(!!js)的行被保守跳过
         assertThat(byId).doesNotContainKey("tool-bash");
