@@ -92,10 +92,17 @@ cd dsh-java
 ```
 
 - `profiles/<name>/cordis.yml` 声明插件集;`$DSH_HOME` 可覆盖 profile 根(镜像 dsh)。
-- `./dshj web boot` 的 HTTP 状态页(`http://127.0.0.1:8080/`,`--port` 可覆盖)显示:
-  harness 名 + 已加载插件列表(Java/Node/GraalJS 宿主标签)+ 桥基址 + 启动日志
+- 任意 `./dshj <profile> boot` 都起 HTTP 状态页(`http://127.0.0.1:8080/`,`--port` 可覆盖),
+  显示:harness 名 + 已加载插件列表(Java/Node/GraalJS 宿主标签)+ 桥基址 + 启动日志
   (M6-5a)。web profile 混排 Java 插件(`counter[JAVA]`)与真实 dsh 插件
   (`@deepseek-ai/dsh-system-prompt[NODE]`,经桥注册 `ctx.systemPrompt` 进 Java 核心, M6-5b)。
+- **dsh 生态全链路(M7-1)**:真实 dsh CLI 装、我们跑 —— `DSH_HOME=<d> dsh plugin --profile demo
+  add <包>` 在 `$DSH_HOME/profiles/demo/` 写 manifest(`dsh.profile.bundles`)+ 用户
+  `cordis.patch.yml` 层 + `node_modules`;然后 `DSH_HOME=<d> ./dshj --profile demo boot` 经
+  `DshProfileReader` 组合 bundle patch 层 → PluginLoaderService 经 Node 桥加载,状态页可见
+  新增包。dsh-base 全量核心树(78 行)需大量未接桥 seam,用户层按 dsh patch 机制
+  (id 定向 `disabled`)把边界行钉掉、只跑已验证子集(如 `@deepseek-ai/dsh-system-prompt`),
+  见 `docs/m7-1/m7-1-evidence.md`。
 - `./setup.sh` 一次性初始化,目标是 **clone → setup → run**。`pnpm install` 的 lefthook
   postinstall 失败非阻塞;`build:lib:host` 需 `--config.verify-deps-before-run=false`
   跳过 pnpm 的 install 预检(该预检会被 lefthook postinstall 阻断;tsc/tsdown 本身无碍,
@@ -126,7 +133,10 @@ root.emit("app/ready", "started");       // 触发 JS
 | **M2** | GraalJS 桥 + 真实 Koishi 插件 | ✅ |
 | **M2 深化** | async apply、next 链、ServiceProxy 跨语言 RPC、JsHost 接口 seam | ✅ |
 | **M3** | 热重载(Java ClassLoader + JS 上下文重启 + 回滚) | ✅ |
-| **M4** | 三宿主 PluginRuntimeResolver + Node worker + 核心对齐 | 🚧 |
+| **M4** | 三宿主 PluginRuntimeResolver + Node worker + 核心对齐 | ✅ |
+| **M5** | PluginLoaderService 配置驱动加载 + 真实 dsh 服务混排 | ✅ |
+| **M6** | 多模块拆分 + 核心发布 + 应用层 `./dshj` + dsh profile 兼容层 | ✅ |
+| **M7-1** | 真实 dsh plugin add 消费闭环(dsh 装、我们跑) | ✅ |
 
 ```
 Java 核心(dev.dsh.cordis)      ← 唯一不可替换

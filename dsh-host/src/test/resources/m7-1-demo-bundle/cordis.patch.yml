@@ -1,0 +1,8 @@
+# M7-1 fixture bundle patch layer: one insert — the demo-bundle plugin itself.
+# In a real dsh profile this layer is composed ahead of the user cordis.patch.yml;
+# the Java DshProfileReader reads it and hands the entry to PluginLoaderService.
+- insert:
+    - id: demo-bundle
+      name: '@dshj/demo-bundle'
+      config:
+        message: installed by dsh, run by dshj

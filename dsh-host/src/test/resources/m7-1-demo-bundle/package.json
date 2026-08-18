@@ -1,0 +1,27 @@
+{
+  "name": "@dshj/demo-bundle",
+  "description": "M7-1 test fixture: a minimal real dsh bundle package (declares dsh.bundle.patch), consumed by the Java harness over the Node bridge",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "cordis.patch.yml"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.x"
+  }
+}

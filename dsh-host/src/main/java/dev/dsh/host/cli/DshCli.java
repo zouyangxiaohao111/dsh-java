@@ -38,9 +38,9 @@ public final class DshCli {
               dshj --profile headless "run the tests"
               dshj web "open the dashboard"
 
-            Web status page (M6-5a): 'dshj web boot' serves an HTML status page at
-              http://127.0.0.1:8080/  (--port <n> overrides the port). It shows the
-              loaded plugins, their host, the bridge base, and the startup log.
+            Web status page (M6-5a): every 'dshj <profile> boot' serves an HTML
+              status page at http://127.0.0.1:8080/  (--port <n> overrides the port).
+              It shows the loaded plugins, their host, the bridge base, and the startup log.
 
             Plugins (plugin add <spec>):
               jar:<path|coords>     external Java jar plugin (install: M6-7)
@@ -105,8 +105,10 @@ public final class DshCli {
             ProfileBoot.Handle handle = boot.bootOnce(profile, out);
             out.println();
             out.println("dshj: profile '" + profile + "' is running on the Java harness. Ctrl+C to stop.");
+            // M7-1:HTTP 状态页对任意 profile 生效(不再限定 web)——boot 成功即可在
+            // http://127.0.0.1:8080/ 看到该 profile 已加载的插件列表/桥基址/启动日志。
             WebStatusServer server = null;
-            if ("web".equals(profile)) {
+            {
                 int port = parsePort(appArgs);
                 try {
                     server = new WebStatusServer(profile, handle, port);

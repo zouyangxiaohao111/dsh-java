@@ -1,0 +1,6 @@
+dshj: profile 'demo' booted (dsh profile D:\code\dsh-java\build\m7-1\home\profiles\demo):
+  - system-prompt  [NODE]  @deepseek-ai/dsh-system-prompt
+dshj: node module bases: [D:\code\dsh-java\vendor\dsh\node_modules, D:\code\dsh-java\build\m7-1\home\profiles\demo\node_modules]
+
+dshj: profile 'demo' is running on the Java harness. Ctrl+C to stop.
+dshj: web status page at http://127.0.0.1:8080/
