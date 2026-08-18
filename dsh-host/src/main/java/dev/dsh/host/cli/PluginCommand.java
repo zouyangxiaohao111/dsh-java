@@ -98,9 +98,11 @@ public final class PluginCommand {
                 default -> false;
             };
             if (!javaSide) {
+                // JS 侧不安装(交给真实 dsh plugin add/pnpm):退出码非零对齐"未安装"语义。
                 out.println("dshj plugin add: " + spec);
                 out.println("  -> target profile: " + profile);
-                out.println("  -> JS plugin: run the real dsh plugin add (pnpm) into the profile, then it loads via the JS bridge");
+                out.println("  -> not installed (JS plugin): run the real dsh plugin add (pnpm) into the profile, then it loads via the JS bridge");
+                ok = false;
                 continue;
             }
             try {

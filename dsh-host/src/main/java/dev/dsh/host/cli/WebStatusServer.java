@@ -89,6 +89,10 @@ public final class WebStatusServer implements AutoCloseable {
     /**
      * 实时查询注册表与已加载插件列表:先按注册表里实际注册的插件列(覆盖热加载/动态注册),
      * 再补上已加载但尚未出现在注册表的插件。宿主标签取 {@code LoadedPlugin} 的最终宿主。
+     *
+     * <p>注册表里 {@link dev.dsh.cordis.js.JsPluginAdapter} 等无 {@code name} 的运行条目被过滤
+     * (跳过 → 稳定显示名来自 {@code handle.loaded()} 的 entry id),不再出现
+     * {@code dev.dsh.cordis.js.JsPluginAdapter@...} 之类的 toString 噪音行。
      */
     List<PluginRow> livePlugins() {
         Map<String, HostKind> kinds = new LinkedHashMap<>();
@@ -98,7 +102,8 @@ public final class WebStatusServer implements AutoCloseable {
         List<PluginRow> rows = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
         handle.ctx().registry.forEach((runtime, plugin) -> {
-            String name = runtime.name() != null ? runtime.name() : String.valueOf(plugin);
+            String name = runtime.name();
+            if (name == null) return;   // JsPluginAdapter 等无 name 运行条目 → 噪音,过滤
             seen.add(name);
             rows.add(new PluginRow(name, hostLabel(kinds.get(name))));
         });

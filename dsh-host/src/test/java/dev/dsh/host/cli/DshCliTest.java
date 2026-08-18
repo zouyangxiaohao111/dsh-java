@@ -183,9 +183,11 @@ class DshCliTest {
 
     @Test
     void runPluginAddJsSidePromptsRealDsh() {
-        String out = runCaptured(args("plugin", "--profile", "web", "add", "@koishijs/plugin-echo"));
-        assertThat(out).contains("@koishijs/plugin-echo").contains("web")
-                .contains("real dsh plugin add");
+        // JS 侧(node:/graaljs:/裸 npm)不安装:提示走真实 dsh plugin add(pnpm),退出码非零(未安装)。
+        Captured c = runCapture(args("plugin", "--profile", "web", "add", "@koishijs/plugin-echo"));
+        assertThat(c.exit).isEqualTo(1);
+        assertThat(c.out).contains("@koishijs/plugin-echo").contains("web")
+                .contains("real dsh plugin add").contains("not installed");
     }
 
     @Test

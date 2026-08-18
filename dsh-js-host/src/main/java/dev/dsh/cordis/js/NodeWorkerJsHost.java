@@ -297,14 +297,15 @@ public final class NodeWorkerJsHost implements JsHost {
 
     // ---- 错误分类(resolver 兜底用)----
 
-    /** 确定性限制:macrotask await / top-level await(同步宿主无法等待,重试无益)→ 明确失败上报。 */
+    /**
+     * 确定性限制(剩余):M5 深化后 worker 已是 async 事件循环 —— apply/invokeFn 里的 macrotask
+     * 可 await,ESM top-level await 经动态 import() 消化。仅剩"同步 serial/waterfall 折叠里的
+     * macrotask await"无法同步 settle(同步折叠固有限制)→ 明确失败上报,重试无益。
+     */
     static boolean isAsyncUnsupported(Throwable t) {
         String m = t == null ? null : String.valueOf(t.getMessage());
         if (m == null) return false;
-        String lower = m.toLowerCase(Locale.ROOT);
-        return lower.contains("macrotask")
-                || lower.contains("top-level await")
-                || lower.contains("did not settle synchronously");
+        return m.toLowerCase(Locale.ROOT).contains("did not settle synchronously");
     }
 
     /** 瞬时 worker 故障(进程死 / 超时 / 管道关闭)——值得重建 worker 重试一次。 */

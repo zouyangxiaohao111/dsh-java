@@ -117,7 +117,7 @@ public final class PluginRuntimeResolver {
     /**
      * Node 路径:创建 worker 加载模块;瞬时 worker 故障(进程死 / 请求超时 / 管道关闭)重建
      * worker 重试一次(类 code-runtime 的失败回收),再失败转 {@link #reportNodeFailure} 明确上报
-     * (macrotask / top-level await 限制给可执行建议,其余原样透出)。
+     * (仅剩的确定性限制 = 同步折叠里的 macrotask await,给可执行建议;其余原样透出)。
      */
     private ResolvedJsPlugin loadNode(Path abs, Path requireCwd) throws IOException {
         JsHost node = hostFactory.create(HostKind.NODE, requireCwd);
@@ -136,13 +136,17 @@ public final class PluginRuntimeResolver {
         }
     }
 
-    /** 把 Node 宿主失败转成明确失败上报:macrotask / TLA 限制给可执行建议,其余原样透出。 */
+    /**
+     * 把 Node 宿主失败转成明确失败上报:M5 深化后 worker 已支持 top-level await(动态 import())
+     * 与 apply/invokeFn 里的 macrotask(async 事件循环);仅剩"同步 serial/waterfall 折叠里的
+     * macrotask await"无法 settle(同步折叠固有限制)→ 给可执行建议,其余原样透出。
+     */
     private static NodeBridgeError reportNodeFailure(Path abs, NodeBridgeError e) {
         if (NodeWorkerJsHost.isAsyncUnsupported(e)) {
-            return new NodeBridgeError("plugin '" + abs + "' cannot run on NodeWorkerJsHost: the module uses top-level "
-                    + "await or awaits a macrotask (timer / I/O) in apply, which the synchronous Node worker host cannot "
-                    + "await (see design doc 'NodeWorkerJsHost 同步宿主限制'). Restructure to avoid top-level await / "
-                    + "macrotask awaits, or use the GraalJS host for such plugins. Root cause: " + e.getMessage(), e);
+            return new NodeBridgeError("plugin '" + abs + "' failed on NodeWorkerJsHost: a synchronous serial/waterfall "
+                    + "callback awaits a macrotask (timer / I/O), which cannot settle inside synchronous folding — await it "
+                    + "in an async context instead (the worker itself does support top-level await and macrotasks in apply "
+                    + "via dynamic import + the async event loop). Root cause: " + e.getMessage(), e);
         }
         return e;
     }

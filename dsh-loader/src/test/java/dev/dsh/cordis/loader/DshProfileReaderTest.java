@@ -235,6 +235,24 @@ class DshProfileReaderTest {
     }
 
     @Test
+    void unknownGlobalTagFailsLoud() throws Exception {
+        // M7-5 low:TagInspector 收紧为仅 !!js —— 未知全局 tag(如 !!mytag)被 SnakeYAML 拒绝
+        // (fail loud),不再经 tag->true 放行到构造器。标准 tag 与 !!js 不受影响(见其它用例)。
+        writeInstall();
+        writeBundle(home().resolve("vendor/dsh/node_modules"), "@test/bad-tag", """
+                - insert:
+                    - id: x
+                      name: '@test/x'
+                      config:
+                        evil: !!mytag something
+                """);
+        writeProfile(home().resolve("profiles/test"), "[\"@test/bad-tag\"]", null);
+        assertThatThrownBy(() -> new DshProfileReader().load(home().resolve("profiles/test"), installAnchor()))
+                .isInstanceOf(java.io.IOException.class)
+                .hasMessageContaining("failed to parse dsh overlay");
+    }
+
+    @Test
     void literalDisabledRowInInsertSkipped() throws Exception {
         writeInstall();
         writeBundle(home().resolve("vendor/dsh/node_modules"), "@test/bundle-lit", """

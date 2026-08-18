@@ -357,10 +357,15 @@ public final class DshProfileReader {
         return out;
     }
 
-    /** 经 SnakeYAML 读 patch YAML(允许 !!js 全局 tag 进自定义构造器),转 Jackson JsonNode 树。 */
+    /**
+     * 经 SnakeYAML 读 patch YAML,转 Jackson JsonNode 树。
+     * TagInspector 只放行 {@code !!js}(tag:yaml.org,2002:js)进自定义构造器;标准 tag
+     * (str/int/bool/null/float/seq/map/…)由 SafeConstructor 原生解析,不受 TagInspector 约束;
+     * 其余未知全局 tag 被 SnakeYAML 拒绝(fail loud,防任意 tag 注入构造器)。
+     */
     private static JsonNode readPatchYaml(Path file) throws IOException {
         LoaderOptions opts = new LoaderOptions();
-        opts.setTagInspector(tag -> true);   // 允许 !!js 全局 tag 到达自定义构造器
+        opts.setTagInspector(tag -> tag.equals(JS_TAG));
         Yaml yaml = new Yaml(new JsTagConstructor(opts));
         Object root;
         try (Reader r = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {

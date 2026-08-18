@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/JDK-25-0080FF?style=flat&logo=openjdk&logoColor=white" alt="JDK 25">
   <img src="https://img.shields.io/badge/构建-Gradle%209.7-02303A?style=flat&logo=gradle&logoColor=white" alt="Gradle 9.7">
-  <img src="https://img.shields.io/badge/测试-285%20全绿-2EA44F?style=flat" alt="285 tests green">
+  <img src="https://img.shields.io/badge/测试-299%20全绿-2EA44F?style=flat" alt="299 tests green">
   <img src="https://img.shields.io/badge/GraalJS-24.1-3DDC84?style=flat" alt="GraalJS">
   <img src="https://img.shields.io/badge/license-MIT-2EA44F?style=flat" alt="MIT License">
 </p>
@@ -65,7 +65,7 @@ dsh-java 用 JDK 25 把这套语义**忠实复刻成 Java**,再架一座 JS 桥,
 git clone https://github.com/zouyangxiaohao111/dsh-java.git
 cd dsh-java
 ./setup.sh           # ① 拉 vendor/dsh 子模块 → ② pnpm install(deps) → ③ build:lib:host(host lib)
-./gradlew test       # 274 测试全绿
+./gradlew test       # 299 测试全绿
 ./dshj web boot      # boot 默认 web profile → 打开 http://127.0.0.1:8080/
 ```
 
@@ -75,7 +75,11 @@ cd dsh-java
 |---|---|---|
 | ① | `git submodule update --init` 拉 `vendor/dsh`(deepseek-harness 真源,dsh-v0.1.0-rc.7) | ✅ |
 | ② | `corepack pnpm install` 装 dsh workspace 依赖(锁 pnpm@11.7.0) | ✅ deps 就位;根 postinstall(lefthook git-hook)在子模块环境失败 = **非阻塞**(不装 git-hook 不影响构建/运行) |
-| ③ | `corepack pnpm --config.verify-deps-before-run=false build:lib:host` 构建 host lib(tsc -b + tsdown) | ✅ exit 0,207 包构建完成;system-prompt lib 就位 |
+| ③ | `corepack pnpm --config.verify-deps-before-run=false build:lib:host` 构建 host lib(tsc -b + tsdown) | ✅ exit 0,207 行 `Build complete`(tsdown 逐入口输出;非 lib/ 产物文件数);system-prompt lib 就位 |
+
+> **计数口径(③ 的 207)**:`207` = tsdown 的 `Build complete` **输出行数**(每个 host 入口点一行,
+> 部分包有多个入口,故 > 包数),<b>不是</b> lib/ 产物文件数。产物口径为另一数(M6-5c 实测
+> 177 个 lib/ 目录,其中 174 个含主入口 `lib/index.js`)。详见 `docs/m6-5c/m6-5c-evidence.md` §1.4。
 
 > **前置依赖**:③ Node worker 宿主(ESM / native / 重 Node 插件)需要系统有 `node` 可执行
 > (可通过环境变量 `NODE` 指定路径)。无 Node 时依赖它的测试会被 JUnit Assumption 自动
@@ -141,6 +145,7 @@ root.emit("app/ready", "started");       // 触发 JS
 | **M7-3** | M7-1/M7-2 集成验证 + 证据 | ✅ |
 | **M7-4** | 全量 dsh-base 树加载地图(实证"配置即用"边界) | ✅ |
 | **M7-5** | 配置通道修补(schemastery/zod 默认化 + `!!js` 求值)+ 整树零配置复核 | ✅ |
+| **M7-6** | 桥序列化(循环/Symbol/fn 句柄/mixin/子路径)+ disabled `!!js` + 遗留小项清理(plugin add 退出码 / web 状态页 adapter 噪音 / setup 计数口径 / 桥死代码与过时文案 / YAML tag 收紧) | ✅ |
 
 ```
 Java 核心(dev.dsh.cordis)      ← 唯一不可替换

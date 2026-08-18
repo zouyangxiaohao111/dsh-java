@@ -7,9 +7,9 @@
 1. **setup 链路诚实**:`./setup.sh` 三步全通(clone → setup → run),exit 0。
    `pnpm install` deps 就位、lockfile 校验通过;根 postinstall(lefthook git-hook 安装)
    在子模块 worktree 配置下失败 —— 标注为**非阻塞**,deps 已装好、git-hook 非运行依赖。
-   `pnpm build:lib:host`(dsh 原生完整构建,tsc -b + tsdown)实测 **exit 0**,207 个 host 包
-   构建完成;pnpm 默认跑 script 前的 install 预检会被 lefthook postinstall 阻断,故用
-   `--config.verify-deps-before-run=false` 跳过预检(真实修复,非掩盖)。
+   `pnpm build:lib:host`(dsh 原生完整构建,tsc -b + tsdown)实测 **exit 0**,207 行
+   `Build complete`(计数口径见 §1.4);pnpm 默认跑 script 前的 install 预检会被 lefthook
+   postinstall 阻断,故用 `--config.verify-deps-before-run=false` 跳过预检(真实修复,非掩盖)。
 2. **端到端证据**:`./dshj web boot` 拉起 web profile,`curl http://127.0.0.1:8080/`
    HTTP 200,页面含 harness 名 + 插件列表(Java+Node 混排)+ 桥基址 + 启动日志,
    10/10 断言通过。页面与启动日志存为 `docs/m6-5c/` 下证据文件。
@@ -25,7 +25,15 @@
 | 1/4 | `git submodule update --init --depth 1 --recursive` | ✅ 子模块就位(`vendor/dsh` = dsh-v0.1.0-rc.7) |
 | 2/4 | `corepack pnpm --version` | ✅ pnpm 11.7.0(corepack 锁,匹配 dsh packageManager) |
 | 3/4 | `corepack pnpm install` | ✅ deps 就位(lockfile 校验通过、`Already up to date`;31 顶层包)。**非阻塞警告**:根 postinstall(lefthook)失败 |
-| 4/4 | `corepack pnpm --config.verify-deps-before-run=false build:lib:host` | ✅ exit 0;207 个 host 包 `Build complete`;system-prompt lib 就位 |
+| 4/4 | `corepack pnpm --config.verify-deps-before-run=false build:lib:host` | ✅ exit 0;207 行 `Build complete`(口径 §1.4);system-prompt lib 就位 |
+
+### 1.4 计数口径(207 vs lib 产物)
+
+`207` 是 tsdown **输出行数**:tsdown 对每个 host 入口点打印一行 `Build complete`。部分包有
+多个入口(如 `main` + `types` + 子路径),因此 207 > 包数;它**不是** lib/ 产物文件数。
+
+产物是另一口径(M6-5c 实测):**177 个 lib/ 目录**(host 包构建产物目录),其中 **174 个**含
+主入口 `lib/index.js`。两处不要混用:`207` = Build complete 行数,`174/177` = lib/ 产物口径。
 
 ### 1.2 诚实结论:两处与"理想"不同的点
 
@@ -103,8 +111,10 @@ dshj: web status page at http://127.0.0.1:8080/
 | 9 | 启动日志含 `system-prompt [NODE]` | ✅ |
 | 10 | HTTP 200 | ✅ |
 
-页面还列出第 3 个条目 `dev.dsh.cordis.js.JsPluginAdapter@...`(host: —):这是 JS 桥
-adapter 在 registry 里的运行条目(无 name 字段),非用户插件,属正常展示。
+> **M6 minor ② 后**:`WebStatusServer.livePlugins` 过滤无 name 的注册表运行条目 —— JS 桥
+> adapter(`JsPluginAdapter`,无 name 字段)不再作为 `dev.dsh.cordis.js.JsPluginAdapter@...`
+> 噪音行展示;稳定显示名来自 boot 已加载插件的 entry id。断言 4 的 `system-prompt · host:
+> Node` 仍成立(它经 loaded() 条目展示)。
 
 ### 2.4 证据文件
 

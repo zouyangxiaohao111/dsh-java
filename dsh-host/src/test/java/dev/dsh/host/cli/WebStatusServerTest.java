@@ -1,5 +1,7 @@
 package dev.dsh.host.cli;
 
+import dev.dsh.cordis.Context;
+import dev.dsh.cordis.Plugin;
 import dev.dsh.cordis.js.HostKind;
 import dev.dsh.cordis.loader.LoadedPlugin;
 import org.junit.jupiter.api.Test;
@@ -90,6 +92,25 @@ class WebStatusServerTest {
             // 启动日志已捕获(非空),桥基址含 profile 自身 node_modules
             assertThat(handle.startupLog()).isNotEmpty();
             assertThat(handle.moduleBases()).isNotEmpty();
+        }
+    }
+
+    @Test
+    void livePluginsFiltersNullNameAdapterNoise() throws Exception {
+        // M6 minor ②:JsPluginAdapter 等无 name 的注册表运行条目被过滤(稳定显示名来自
+        // loaded() 的 entry id),不再出现 Plugin@hash toString 噪音行。
+        try (ProfileBoot.Handle handle = bootWebProfile()) {
+            handle.ctx().plugin(new Plugin<Object>() {
+                @Override
+                public Object apply(Context ctx, Object config) {
+                    return null;   // name() 保持默认 null,模拟桥 adapter 无 name 的运行条目
+                }
+            }, null);
+
+            WebStatusServer server = new WebStatusServer("web", handle, 0);
+            assertThat(server.livePlugins())
+                    .extracting(WebStatusServer.PluginRow::name)
+                    .containsExactly("counter");   // 无 @hash 噪音行,counter 仍显示
         }
     }
 

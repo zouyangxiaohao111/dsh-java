@@ -179,7 +179,7 @@ function takeSlotLine() {
   return s === OVERSIZE ? null : line
 }
 
-// ---- 同步行读取:worker 主循环与嵌套 bridgeCall 共用同一把 stdin 读锁 ----
+// ---- 同步行读取:worker 主循环与嵌套同步桥调用(syncBridgeCall)共用同一把 stdin 读锁 ----
 // (旧实现 fs.readSync 阻塞读;现由 reader 线程 + Atomics 提供,见上)
 
 function send(obj) {
@@ -793,13 +793,8 @@ async function handleRequest(msg) {
 // ---- 消息路由 ----
 function routeMessage(msg) {
   if (msg.type === 'ctxResult') {
-    // Java 对某次桥调用的回复。同步桥直接消费;异步桥(未来扩展)经 bridgeWaiters 解析。
-    const w = bridgeWaiters.get(msg.id)
-    if (w) {
-      bridgeWaiters.delete(msg.id)
-      if (msg.error) w.reject(new Error('java bridge error: ' + msg.error))
-      else w.resolve(deserializeValue(msg.result))
-    }
+    // Java 对某次桥调用的回复。同步泵(syncBridgeCall)在泵内按 id 直接消费当前请求的回复;
+    // 泵外到达的 ctxResult 只可能是迟到/多余的回复(当前没有异步桥调用在等它)→ 忽略。
     return
   }
   if (msg.type === 'result' || msg.type === 'error') {
@@ -814,16 +809,6 @@ function dispatchRequest(msg) {
     (resp) => { if (resp) send(resp) },
     (e) => send({ type: 'error', id: typeof msg.id === 'number' ? msg.id : undefined, message: String(e && e.stack ? e.stack : e) }),
   )
-}
-
-// ---- 异步桥调用(返回 Promise;供未来 async ctx 桥方法使用)。当前 ctx 方法用同步泵。----
-const bridgeWaiters = new Map()
-function bridgeCall(type, payload) {
-  const id = ++bridgeSeq
-  return new Promise((resolve, reject) => {
-    bridgeWaiters.set(id, { resolve, reject })
-    send(Object.assign({ type, id }, payload))
-  })
 }
 
 // ---- 入站消息处理(事件循环新行 / 泵期间入队的重入消息共用)----
