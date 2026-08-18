@@ -138,6 +138,9 @@ root.emit("app/ready", "started");       // 触发 JS
 | **M6** | 多模块拆分 + 核心发布 + 应用层 `./dshj` + dsh profile 兼容层 | ✅ |
 | **M7-1** | 真实 dsh plugin add 消费闭环(dsh 装、我们跑) | ✅ |
 | **M7-2** | `dshj plugin add` GitHub 源码安装(clone → 编译 → 加载) | ✅ |
+| **M7-3** | M7-1/M7-2 集成验证 + 证据 | ✅ |
+| **M7-4** | 全量 dsh-base 树加载地图(实证"配置即用"边界) | ✅ |
+| **M7-5** | 配置通道修补(schemastery/zod 默认化 + `!!js` 求值)+ 整树零配置复核 | ✅ |
 
 ```
 Java 核心(dev.dsh.cordis)      ← 唯一不可替换
