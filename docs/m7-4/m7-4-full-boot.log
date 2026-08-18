@@ -1,0 +1,56 @@
+dshj: profile 'full' booted (dsh profile D:\code\dsh-java\build\m7-4\home\profiles\full):
+  - llm  [NODE]  @deepseek-ai/dsh-llm
+  - session  [NODE]  @deepseek-ai/dsh-session
+  - typert-loader  [NODE]  @deepseek-ai/dsh-typert-loader
+  - session-title-llm  [NODE]  @deepseek-ai/dsh-session-title-first-prompt-llm
+  - user-questions  [NODE]  @deepseek-ai/dsh-user-questions
+  - agent  [NODE]  @deepseek-ai/dsh-agent
+  - agent-default-model  [NODE]  @deepseek-ai/dsh-agent-default-model
+  - jobs  [NODE]  @deepseek-ai/dsh-jobs-local
+  - llm-retry  [NODE]  @deepseek-ai/dsh-llm-retry
+  - credentials  [NODE]  @deepseek-ai/dsh-credentials-local
+  - attachment-local  [NODE]  @deepseek-ai/dsh-attachment-local
+  - session-projection  [NODE]  @deepseek-ai/dsh-session-projection
+  - session-telemetry-otel  [NODE]  @deepseek-ai/dsh-session-telemetry-otel
+  - subprocess  [NODE]  @deepseek-ai/dsh-subprocess-local
+  - sandbox  [NODE]  @deepseek-ai/dsh-sandbox-local
+  - sandbox-policy  [NODE]  @deepseek-ai/dsh-sandbox-policy
+  - approval  [NODE]  @deepseek-ai/dsh-user-approval
+  - shell-env  [NODE]  @deepseek-ai/dsh-shell-env
+  - tool-jobs  [NODE]  @deepseek-ai/dsh-tool-jobs
+  - fs-observation-policy  [NODE]  @deepseek-ai/dsh-fs-observation-policy
+  - tool-fs  [NODE]  @deepseek-ai/dsh-tool-fs
+  - tool-fs-search  [NODE]  @deepseek-ai/dsh-tool-fs-search
+  - agent-instructions  [NODE]  @deepseek-ai/dsh-agent-instructions
+  - skill  [NODE]  @deepseek-ai/dsh-skill
+  - tool-skill  [NODE]  @deepseek-ai/dsh-tool-skill
+  - command-feedback  [NODE]  @deepseek-ai/dsh-command-feedback
+  - goal-round-driver  [NODE]  @deepseek-ai/dsh-goal-round-driver
+  - command-goal  [NODE]  @deepseek-ai/dsh-command-goal
+  - token-meter  [NODE]  @deepseek-ai/dsh-token-meter
+  - compaction-basic  [NODE]  @deepseek-ai/dsh-compaction-basic
+  - command-compact  [NODE]  @deepseek-ai/dsh-command-compact
+  - subagent  [NODE]  @deepseek-ai/dsh-subagent
+  - tool-subagent-control  [NODE]  @deepseek-ai/dsh-tool-subagent-control
+  - tool-subagent  [NODE]  @deepseek-ai/dsh-tool-subagent
+  - tool-subagent-fork  [NODE]  @deepseek-ai/dsh-tool-subagent
+  - tool-subagent-report  [NODE]  @deepseek-ai/dsh-tool-subagent-report
+  - workflow-worker-thread  [NODE]  @deepseek-ai/dsh-workflow-worker-thread
+  - tool-workflow  [NODE]  @deepseek-ai/dsh-tool-workflow
+  - timeout-policy  [NODE]  @deepseek-ai/dsh-tool-call-timeout-policy
+  - spill-local  [NODE]  @deepseek-ai/dsh-spill-local
+  - spill-policy  [NODE]  @deepseek-ai/dsh-spill-policy
+  - session-checkpoint-policy  [NODE]  @deepseek-ai/dsh-session-checkpoint-policy
+  - tool-result-pruner  [NODE]  @deepseek-ai/dsh-compaction-tool-result-pruner
+  - tool-todo  [NODE]  @deepseek-ai/dsh-tool-todo
+  - tool-goal  [NODE]  @deepseek-ai/dsh-tool-goal
+  - tool-ralph  [NODE]  @deepseek-ai/dsh-tool-ralph
+  - tool-str-replace-editor  [NODE]  @deepseek-ai/dsh-tool-str-replace-editor
+  - repeat-tool-reminder  [NODE]  @deepseek-ai/dsh-repeat-tool-reminder
+  - web  [NODE]  @deepseek-ai/dsh-web
+  - tool-web  [NODE]  @deepseek-ai/dsh-tool-web
+  - system-prompt  [NODE]  @deepseek-ai/dsh-system-prompt
+dshj: node module bases: [D:\code\dsh-java\vendor\dsh\node_modules, D:\code\dsh-java\build\m7-4\home\profiles\full\node_modules]
+
+dshj: profile 'full' is running on the Java harness. Ctrl+C to stop.
+dshj: web status page at http://127.0.0.1:8080/
