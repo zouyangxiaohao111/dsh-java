@@ -195,8 +195,13 @@ let nextHandle = 1
 // ---- 值序列化(worker → Java)----
 // 函数 → {$kind:'fn',id,length};普通值走 JSON。服务句柄({$kind:'svc',id} 与
 // {$kind:'ctx'/'module'} 标记)是普通 JSON 对象,原样透传回 Java。
-// 实数语义:NaN/±Infinity → null(与 JSON.stringify 一致);循环引用 → 报错
-// (跨桥值必须是树,拒绝栈溢出;真实 dsh 插件的 zod schema 含 maxValue:Infinity)。
+// 实数语义:NaN/±Infinity → null(与 JSON.stringify 一致)。
+// M7-6 容忍性(真实 dsh 插件 apply 结果 / service provide 值里出现):
+//   - 循环引用 → {$kind:'cycle'} 标记,不无限递归(Service 实例 this.ctx / this.ownerFiber
+//     的自引用链;真实 dsh 里这些回环是实例结构,跨桥复制应丢环而不是挂加载);
+//   - Symbol 值 → {$kind:'symbol'} 标记(不可序列化,保留键位;如 session-query-sqlite 的
+//     _persistenceBinding.identity);
+//   - 其余不可序列化类型仍抛明确错误。
 function serializeValue(v, seen) {
   if (v === undefined) return { $kind: 'undefined' }
   if (v === null) return null
@@ -215,9 +220,10 @@ function serializeValue(v, seen) {
     if (Number.isInteger(len)) out.length = len
     return out
   }
+  if (t === 'symbol') return { $kind: 'symbol' }
   if (t === 'object') {
     const active = seen || new WeakSet()
-    if (active.has(v)) throw new Error('cannot serialize cyclic value across bridge')
+    if (active.has(v)) return { $kind: 'cycle' }   // 循环引用:降级为标记(此前抛错挂加载)
     active.add(v)
     let out
     if (Array.isArray(v)) {
@@ -233,11 +239,30 @@ function serializeValue(v, seen) {
 }
 
 // ---- 值反序列化(Java → worker 的 config / invokeFn args)----
+// M7-6 容忍性:fn 句柄失效(已 release 或属其它 worker 进程)不再挂加载 —— 降级为
+// 记录性 no-op stub(日志提示),让跨 worker 服务值读取不崩(真实 dsh 每插件独立
+// worker,兄弟插件读到的服务值含对方 worker 的 fn 句柄;深层语义修复属共享 fiber/
+// 服务句柄化工作,这里先保证加载不挂)。
+function makeStaleFn(id) {
+  const stub = function () {
+    if (stub._warned) return undefined
+    stub._warned = true
+    process.stderr.write('node-bridge: stale fn handle ' + id + ' invoked (no-op stub; '
+      + 'owned by a released/disposed or foreign worker handle)\n')
+    return undefined
+  }
+  return stub
+}
+
 function deserializeValue(v) {
   if (v === null || typeof v !== 'object') return v
   if (v.$kind === 'fn') {
     const fn = fnById.get(v.id)
-    if (typeof fn !== 'function') throw new Error('unknown fn handle ' + v.id)
+    if (typeof fn !== 'function') {
+      process.stderr.write('node-bridge: stale fn handle ' + v.id
+        + ' (released or foreign worker); returning no-op stub\n')
+      return makeStaleFn(v.id)
+    }
     return fn
   }
   if (v.$kind === 'undefined') return undefined
@@ -466,6 +491,17 @@ function makeCtx(ctxId) {
   }
   // fiber seam 非可枚举(自引用链不能被 serializeValue 扫到);ctx.fiber 经 Proxy get 仍可达。
   Object.defineProperty(ctx, 'fiber', { value: rootFiber, enumerable: false, writable: true, configurable: true })
+  // cordis 框架方法(M7-6):ctx.mixin(source, keys|renamed) 把服务成员直接暴露到 ctx
+  // (reflect.ts:364-390)。Java Context.mixin 已有(accessor 转发),这里暴露给 shim。
+  // keys 可为字符串数组(同键暴露)或映射(重命名);原样过桥,Java 侧按 List/Map 分发。
+  // 非可枚举定义:仅供 ctx 的 Proxy get 可达,不进 Object.keys —— 否则每次序列化 ctx 就
+  // 多注册一个 fn 句柄,扰动全桥句柄 id 分配(实测破坏 M5Profile 组合场景)。
+  Object.defineProperty(ctx, 'mixin', {
+    value: (source, keys) => syncBridgeCall('ctxCall', {
+      ctx: ctxId, method: 'mixin', args: [source, serializeValue(keys)],
+    }),
+    enumerable: false, writable: true, configurable: true,
+  })
   // command DSL(与 ctx.js installCommand 同语义;注册走 ctxCall)
   const registry = {
     register: (name, argDef, options, action) =>

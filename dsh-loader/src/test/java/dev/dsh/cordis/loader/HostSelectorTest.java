@@ -84,6 +84,53 @@ class HostSelectorTest {
     }
 
     @Test
+    void npmSpecifierWithExportMapSubpathResolvesTargetFile() throws Exception {
+        // M7-6:exports 子路径说明符(pkg/subpath)→ 经包 package.json exports map 解析到实际文件
+        // (dsh profile 组合行的 @deepseek-ai/dsh-tool-subagent-control/list-agents 即此形状)
+        Path pkg = tmp.resolve("app/node_modules/@deepseek-ai/dsh-tool-subagent-control");
+        Files.createDirectories(pkg.resolve("lib/types"));
+        Files.writeString(pkg.resolve("package.json"),
+                "{\"name\":\"@deepseek-ai/dsh-tool-subagent-control\",\"type\":\"module\",\"main\":\"lib/index.js\","
+                + "\"exports\":{\".\":{\"types\":\"./lib/types/index.d.ts\",\"default\":\"./lib/index.js\"},"
+                + "\"./list-agents\":{\"types\":\"./lib/types/list-agents.d.ts\",\"default\":\"./lib/types/list-agents.js\"}}}");
+        Files.writeString(pkg.resolve("lib/types/list-agents.js"), "export const name = 'list-agents';\n");
+        Path base = tmp.resolve("app");
+        Path resolved = HostSelector.resolveFromNodeModules(base,
+                "@deepseek-ai/dsh-tool-subagent-control/list-agents");
+        assertThat(resolved).isEqualTo(pkg.resolve("lib/types/list-agents.js").toAbsolutePath().normalize());
+    }
+
+    @Test
+    void npmSpecifierWithExportMapSubpathSelectsResolvedFile() throws Exception {
+        // 端到端 select:子路径说明符 → abs 落到 exports 解析出的文件(Node ESM 包)
+        Path pkg = tmp.resolve("app/node_modules/@deepseek-ai/dsh-tool-subagent-control");
+        Files.createDirectories(pkg.resolve("lib/types"));
+        Files.writeString(pkg.resolve("package.json"),
+                "{\"name\":\"@deepseek-ai/dsh-tool-subagent-control\",\"type\":\"module\",\"main\":\"lib/index.js\","
+                + "\"exports\":{\".\":{\"types\":\"./lib/types/index.d.ts\",\"default\":\"./lib/index.js\"},"
+                + "\"./list-agents\":{\"types\":\"./lib/types/list-agents.d.ts\",\"default\":\"./lib/types/list-agents.js\"}}}");
+        Files.writeString(pkg.resolve("lib/types/list-agents.js"), "export const name = 'list-agents';\n");
+        HostSelector sel = new HostSelector();
+        ResolvedEntry re = sel.select(new Entry("list-agents",
+                "@deepseek-ai/dsh-tool-subagent-control/list-agents", null, null), tmp.resolve("app"));
+        assertThat(re.explicit()).isFalse();
+        assertThat(re.kind()).isEqualTo(HostKind.NODE);   // type:module ESM → 真 Node
+        assertThat(re.abs()).isEqualTo(pkg.resolve("lib/types/list-agents.js").toAbsolutePath().normalize());
+    }
+
+    @Test
+    void barePackageRootStillResolvesWithoutSubpath() throws Exception {
+        // 回归:无子路径的包根说明符行为不变
+        Path pkg = tmp.resolve("app/node_modules/@deepseek-ai/dsh-llm");
+        Files.createDirectories(pkg);
+        Files.writeString(pkg.resolve("package.json"), "{\"name\":\"@deepseek-ai/dsh-llm\",\"main\":\"index.js\"}");
+        Files.writeString(pkg.resolve("index.js"), "module.exports = { name: 'llm', apply(ctx) {} }");
+        Path base = tmp.resolve("app");
+        assertThat(HostSelector.resolveFromNodeModules(base, "@deepseek-ai/dsh-llm"))
+                .isEqualTo(pkg.toAbsolutePath().normalize());
+    }
+
+    @Test
     void npmSpecifierWithoutInstallKeepsLiteralPath() {
         // 找不到时保持字面路径(加载期报清晰错误),不静默改判
         HostSelector sel = new HostSelector();

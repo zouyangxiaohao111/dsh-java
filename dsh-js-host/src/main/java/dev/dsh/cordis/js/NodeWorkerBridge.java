@@ -64,6 +64,8 @@ public final class NodeWorkerBridge {
                 return doProvide(args);
             case "get":
                 return doGet(args);
+            case "mixin":
+                return doMixin(args);
             case "inject":
                 return doInject(args);
             case "effect":
@@ -150,6 +152,28 @@ public final class NodeWorkerBridge {
         String name = args.path(0).asText("");
         Object svc = ctx.get(name);
         return host.toJsonNode(exposeService(svc));
+    }
+
+    /** {@code ctx.mixin(source, keys|renamed)}:把服务成员直接暴露到 ctx(Java Context.mixin
+     *  已实现,accessor 转发;M7-6 桥面补齐)。keys 为字符串数组(同键暴露)或映射(重命名)。
+     *  reader 线程非阻塞(纯注册,无往返)。 */
+    private JsonNode doMixin(JsonNode args) {
+        String source = args.path(0).asText("");
+        JsonNode keys = args.get(1);
+        if (keys != null && keys.isArray()) {
+            List<String> keyList = new ArrayList<>(keys.size());
+            for (JsonNode k : keys) keyList.add(k.asText());
+            ctx.mixin(source, keyList);
+        } else if (keys != null && keys.isObject()) {
+            Map<String, String> renamed = new LinkedHashMap<>();
+            var it = keys.fields();
+            while (it.hasNext()) {
+                var e = it.next();
+                renamed.put(e.getKey(), e.getValue().asText());
+            }
+            ctx.mixin(source, renamed);
+        }
+        return NullNode.instance;
     }
 
     private JsonNode doInject(JsonNode args) {

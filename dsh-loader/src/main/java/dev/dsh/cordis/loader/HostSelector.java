@@ -119,13 +119,68 @@ public final class HostSelector {
      * 等价);找到返回其绝对路径,找不到返回 null。用于 dsh profile 组合行的 npm 模块说明符
      * (如 {@code @deepseek-ai/dsh-llm})。与 {@link DshProfileReader#packageDirFromAnchor}
      * 同构,这里是模块根查找而非 bundle 解析。
+     *
+     * <p><b>M7-6 exports 子路径</b>:ref 可为 {@code pkg/subpath} 形式的模块说明符
+     * (如 {@code @deepseek-ai/dsh-tool-subagent-control/list-agents})。先按包根
+     * ({@code node_modules/<pkg>})解析,再把子路径经包 {@code package.json} 的
+     * {@code exports} map 解析到实际文件(条件导出取 default/node/import/require
+     * 首个命中);非 exports 包的旧式布局({@code node_modules/<pkg>/<subpath>})仍兜底。
      */
     static Path resolveFromNodeModules(Path baseDir, String ref) {
+        String pkgName = ref;
+        String subpath = null;
+        int slash = ref.startsWith("@")
+                ? ref.indexOf('/', ref.indexOf('/') + 1)   // @scope/pkg/subpath → pkg=@scope/pkg
+                : ref.indexOf('/');                          // pkg/subpath → pkg=pkg
+        if (slash > 0) {
+            pkgName = ref.substring(0, slash);
+            subpath = ref.substring(slash + 1);
+        }
         Path dir = baseDir.toAbsolutePath().normalize();
         while (dir != null) {
-            Path candidate = dir.resolve("node_modules").resolve(ref).normalize();
-            if (Files.exists(candidate)) return candidate;
+            Path pkgDir = dir.resolve("node_modules").resolve(pkgName).normalize();
+            if (Files.isDirectory(pkgDir)) {
+                if (subpath == null) return pkgDir;
+                Path viaExports = resolveExportsSubpath(pkgDir, subpath);
+                if (viaExports != null) return viaExports;
+                // 非 exports 包:直接拼 node_modules/<ref>
+                Path direct = dir.resolve("node_modules").resolve(ref).normalize();
+                return Files.exists(direct) ? direct : null;
+            }
             dir = dir.getParent();
+        }
+        return null;
+    }
+
+    /**
+     * 经包 {@code exports} map 解析子路径(exports["./list-agents"] → 实际文件)。
+     * 条件导出对象按 host 侧优先级取 default/node/import/require 首个文本命中;
+     * 无 exports / 子路径未收录 → 返回 null。
+     */
+    static Path resolveExportsSubpath(Path pkgDir, String subpath) {
+        Path pkg = pkgDir.resolve("package.json");
+        if (!Files.isRegularFile(pkg)) return null;
+        try {
+            JsonNode exports = MAPPER.readTree(pkg.toFile()).path("exports");
+            if (!exports.isObject()) return null;
+            String key = subpath.startsWith(".") ? subpath : "./" + subpath;
+            JsonNode entry = exports.path(key);
+            if (entry.isMissingNode() || entry.isNull()) return null;
+            JsonNode target = entry;
+            if (entry.isObject()) {
+                target = null;
+                for (String cond : new String[]{"default", "node", "import", "require"}) {
+                    JsonNode c = entry.path(cond);
+                    if (c.isTextual()) { target = c; break; }
+                }
+                if (target == null) return null;
+            }
+            if (target.isTextual() && !target.asText().isBlank()) {
+                Path resolved = pkgDir.resolve(target.asText()).normalize();
+                if (Files.exists(resolved)) return resolved;
+            }
+        } catch (IOException ignored) {
+            // 包 json 读取失败 → 子路径不可解,返回 null(加载期报清晰错误)
         }
         return null;
     }

@@ -150,6 +150,28 @@ zod `.parse`)。**12 行 B 组已降为 A 组,51 行全部是「零 config」**,
   in-process/web-search-deepseek(fn handle 失效)、settings/permission(shim getter 求值 bug)。
 - **核心: cordis-shim 与真实 cordis 语义差异**):settings、permission 的 getter 求值 bug 属这一类。
 
+> **M7-6 复核(桥值序列化,commit feat: M7-6 - bridge value serialization)**:
+> 13 行"桥形状"里,**11 行已由 node-bridge.js 值序列化 + 解析器修复落地,1 类确认非桥问题**;
+> settings/permission(shim getter bug)不属本里程碑(核心:cordis-shim 类别,另行处理)。
+> - **循环 this.ctx / 自引用链**(session-title、commands、goal):serializeValue 遇已见对象降级为
+>   `{$kind:'cycle'}` 标记,不再 "cannot serialize cyclic value"。
+> - **Symbol 实例字段**(session-query-sqlite):serializeValue 把 Symbol 值降级为 `{$kind:'symbol'}`
+>   标记,不再 "cannot serialize value across bridge: symbol"。
+> - **失效 fn 句柄**(llm-pi-ai、skill-filesystem、subagent-spawn/fork-in-process、web-search-deepseek):
+>   deserializeValue 遇未注册 fn 句柄(已 release / **跨 worker**——每插件独立 Node worker,兄弟
+>   插件读到的服务值含对方 worker 的 fn 句柄)降级为记录性 no-op stub,不再 "unknown fn handle"。
+>   注:跨 worker 服务方法的**真实调用语义**仍不成立(stub 为 no-op),深层修复属"共享插件 fiber /
+>   服务句柄化"工作(§7 第 1 项)。
+> - **ctx.mixin 缺失**(timer):ctx shim 补 `mixin`(非可枚举,镜像 Java Context.mixin),Java
+>   NodeWorkerBridge 补 mixin 分发(List/Map 两形),不再 "cannot get property mixin without inject"。
+> - **export-map 子路径**(tool-subagent-list-agents):HostSelector.resolveFromNodeModules 拆分
+>   `pkg/subpath` → 经包 package.json `exports` 解析到实际文件(条件导出取 default/node/import/require),
+>   不再 "path not found"。
+> - **typert / typert-gateway(client-only)**:复核确认 `@deepseek-ai/dsh-typert-registry` 的
+>   `dsh.client.platform: web, immediately: true` 且 **lib/ 仅有 types/、无 host 运行时构建**
+>   (`lib/index.js`/`lib/client.js` 不存在,exports/files 声明的运行时入口未生成)—— 真无 host lib,
+>   **记录为设计如此,不需修**,从"桥形状"标记为**非桥问题**(应建模为 loader 跳过 client-only 行)。
+
 ## 5. D:5 行 base 层 disabled(M7-5 复核:仅 config 通道的 `!!js` 被求值,disabled 通道未解)
 
 > **M7-5 复核结论**:配置通道修补只求值 **config 值**里的 `!!js`(worker 侧 apply 前);`disabled`
