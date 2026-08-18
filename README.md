@@ -34,6 +34,14 @@ dsh-java 用 JDK 25 把这套语义**忠实复刻成 Java**,再架一座 JS 桥,
 | 你自己的 Java harness 组件 | dsh 的 agent / 工具 / 会话基建 |
 | Maven 依赖、虚拟线程、JPMS | 活跃的 Koishi 插件作者 |
 
+## 架构原则(2026-08-18 用户定调,不可违背)
+
+**一个 Java 核心是唯一运行时。** `dev.dsh.cordis`(Java 复刻的 cordis)是唯一的插件运行时与注册表——JS 插件(经桥)是**注册表里的普通插件**,和 Java 插件完全同级、随意插拔、互相作用、互相组合。
+
+- **绝不在 worker 里再跑一套 cordis**:Node worker / GraalJS 只是"宿主",跑 JS 插件的代码;插件的 ctx、事件、服务、生命周期**全部来自 Java 核心**(经桥)。
+- **桥能力 = 通用机制,不做定制**:live 对象句柄 / RPC 代理 / 迭代器 / 事件发射器 / 递归返回,都是对所有插件通用的一次性机制;绝不写 per-plugin 的定制桥。
+- **"一套机制、两套运行时"**:机制 = Java cordis(唯一);运行时 = ① Java 原生 ② GraalJS 进程内 ③ Node worker 进程外,三者都是跑插件的宿主,不是第二个核心。
+
 ## 核心特性
 
 <table>
