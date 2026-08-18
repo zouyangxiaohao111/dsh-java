@@ -108,7 +108,11 @@ public final class JsCtxBridge {
 
     @HostAccess.Export
     public Object get(String name) {
-        Object svc = ctx.get(name);
+        // getService: cordis ctx.get() semantics — same-scope sibling services visible,
+        // unavailable services read as JS null/undefined (plugins rely on `?? fallback`
+        // for launcher slots like launchEnvironment / configuredAgentIdentities).
+        Object svc = ctx.getService(name);
+        if (svc == Context.NO_SERVICE) return null;
         if (svc != null && !(svc instanceof Value)) return new ServiceProxy(host.context()).expose(svc);
         return svc;
     }

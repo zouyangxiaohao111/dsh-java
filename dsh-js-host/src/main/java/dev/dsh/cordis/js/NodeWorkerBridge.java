@@ -150,7 +150,12 @@ public final class NodeWorkerBridge {
 
     private JsonNode doGet(JsonNode args) {
         String name = args.path(0).asText("");
-        Object svc = ctx.get(name);
+        // getService: cordis ctx.get() semantics — same-scope sibling services visible,
+        // unavailable services read as JS undefined (plugins rely on `?? fallback` for
+        // launcher slots like launchEnvironment / configuredAgentIdentities and on
+        // strict `=== undefined` absence checks; no "without inject" throw).
+        Object svc = ctx.getService(name);
+        if (svc == Context.NO_SERVICE) return host.toJsonNode(NodeWorkerJsHost.UNDEFINED);
         return host.toJsonNode(exposeService(svc));
     }
 

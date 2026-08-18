@@ -141,12 +141,45 @@ public final class Context {
             if (!Objects.equals(Reflect.effectiveIsolate(f.parent, name), key)) break;
             f = f.parent.fiber;
         }
+        // fiber isolation (M7-6): sibling fibers are independent child fibers, so the
+        // chain above never reaches their stores. cordis resolves ctx.get(name) through
+        // the shared store keyed by the isolate label (reflect.ts:233-243) — consult it
+        // as a fallback so same-scope siblings (dsh-base tree plugins) see each other.
+        Reflect.Impl global = this.reflect.getImpl(this, name, true);
+        if (global != null) return (T) global.value;
         // fiber.ts:163-165 — reaching a non-plugin fiber (or an isolation boundary)
         // without the service throws, mirroring reflect.ts:144 "cannot get property
         // \"X\" without inject". The root context read (fiber.runtime == null) is
         // handled by the early return above and stays null for a missing service.
         throw new CordisError(CordisError.Code.INACTIVE_EFFECT,
                 "cannot get property \"" + name + "\" without inject");
+    }
+
+    /** Sentinel returned by {@link #getService} when the named service is unavailable
+     *  (not provided / not yet active) — distinct from a provided {@code null} value.
+     *  The JS bridges map it to JS {@code undefined}, mirroring cordis {@code ctx.get()}
+     *  which reads {@code undefined} for a service that is not (yet) available. */
+    public static final Object NO_SERVICE = new Object();
+
+    /** Read a service with cordis {@code ctx.get()} semantics (reflect.ts:233-243): the
+     *  shared store keyed by the isolate label makes same-scope sibling services visible,
+     *  and an unavailable service yields {@link #NO_SERVICE} instead of throwing (plugins
+     *  use {@code ctx.get(name) ?? fallback}, e.g. dsh-launch-environment). The JS bridges
+     *  route every ctx read here — both explicit {@code ctx.get(name)} calls and
+     *  {@code ctx[name]} property reads collapse onto this non-throwing path. */
+    @SuppressWarnings("unchecked")
+    public <T> T getService(String name) {
+        if (this.fiber.runtime == null) {
+            // non-plugin context: get() reads null for both missing and provided-null,
+            // so resolve the impl to distinguish the unavailable case.
+            Reflect.Impl impl = this.reflect.getImpl(this, name, false);
+            return impl == null ? (T) NO_SERVICE : (T) impl.value;
+        }
+        try {
+            return get(name);
+        } catch (CordisError e) {
+            return (T) NO_SERVICE;
+        }
     }
 
     /** Overwrite a provided service's value; computed accessors route to their setter. */

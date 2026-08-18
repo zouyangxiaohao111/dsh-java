@@ -603,9 +603,14 @@ async function isServiceClass(candidate) {
 
 function pluginMeta(mod) {
   const source = resolvePlugin(mod).source
+  // Note: a class plugin (Service subclass, e.g. dsh-plan-mode / dsh-tools /
+  // dsh-agent-loop) is `typeof 'function'`, so `static inject`/`static provide`
+  // must be read from the class too — otherwise its fiber never gates activation
+  // on the declared deps and loads out of order (reads an unavailable sibling
+  // service as undefined). M7-6 fiber isolation: accept functions as well.
   const get = (key) => {
     for (const c of [mod, source, mod && mod.default]) {
-      if (c && typeof c === 'object' && c[key] !== undefined) return c[key]
+      if (c && (typeof c === 'object' || typeof c === 'function') && c[key] !== undefined) return c[key]
     }
     return undefined
   }

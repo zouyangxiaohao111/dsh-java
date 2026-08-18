@@ -145,6 +145,17 @@ zod `.parse`)。**12 行 B 组已降为 A 组,51 行全部是「零 config」**,
   agent-loop、fs-sandbox、llm-deepseek。根因:**每插件独立子 fiber,服务不跨兄弟可见**;真实 dsh
   按"服务可用性驱动"激活(cordis patch 注释原话),loader 按严格顺序 + 逐插件 fiber 实现。
 - **桥形状(跨桥值/句柄)**:13 行 —— typert、typert-gateway(client-only 无 host lib)、
+
+> **M7-6 复核(fiber 隔离修复,commit "feat: M7-6 - fiber isolation")**:核心层 `Context.get`
+> 加"共享 store 按 isolate label"回退 + 桥面 `getService`(cordis `ctx.get` 语义:同 scope 兄弟可见、
+> 缺服务读 JS `undefined` 不抛 "without inject")+ node-bridge `pluginMeta` 读类插件 `static inject`
+> (服务可用性驱动激活的前置)。实证(round-m7-6-fiber-boot):**fs-sandbox、llm-deepseek 已能加载**
+> (整树 boot 成功,51 → 53 行;前者只做兄弟服务**属性读** `ctx.sandboxPolicy.defaultMode`,后者读
+> launcher 槽 `ctx.get('launchEnvironment')` 落空后走 `?? fallback`)。其余 4 行(session-persistence-
+> jsonl / plan-mode / tools / agent-loop)**不再报 "without inject"**(兄弟服务已可见),但 apply 内要
+> **调用**兄弟服务的方法(`ctx.sessions.list` / `ctx.systemPrompt.section` 等),而每插件独立 worker 的
+> fn 句柄跨 worker 只能降级为 no-op stub —— 需"服务句柄化"(跨 worker 服务方法调用)这一独立桥面
+> 工作项,不在本次 fiber 隔离范围内。
   tool-subagent-list-agents(exports 子路径)、timer(ctx.mixin 未暴露)、session-title/commands/goal
   (循环)、session-query-sqlite(Symbol)、llm-pi-ai/skill-filesystem/subagent-{spawn,fork}-
   in-process/web-search-deepseek(fn handle 失效)、settings/permission(shim getter 求值 bug)。
