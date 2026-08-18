@@ -17,6 +17,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 /**
@@ -71,6 +72,9 @@ public final class PluginInstaller {
 
     private static final Pattern CLASS_NAME = Pattern.compile("^[A-Za-z_$][A-Za-z0-9_$.]*$");
     private static final Pattern GITHUB_SPEC = Pattern.compile("^([^/]+)/(.+)$");
+
+    /** git clone 进程限时(秒):反挂死纪律,克隆无响应时终止进程而非无限等待。 */
+    static final int GIT_CLONE_TIMEOUT_SECONDS = 120;
 
     private final Config config;
     private final HttpClient http;
@@ -219,7 +223,7 @@ public final class PluginInstaller {
                 throw new InstallException("invalid github spec '" + target + "' (expect github:owner/repo)");
             }
             String owner = m.group(1), repo = m.group(2);
-            return gitCloneTo(profileDir, "https://github.com/" + owner + "/" + repo + ".git", repo, out);
+            return gitCloneTo(profileDir, githubUrl(owner, repo), repo, out);
         }
         if (target.startsWith("git+")) {
             String url = target.substring("git+".length());
@@ -264,7 +268,9 @@ public final class PluginInstaller {
                 + "(relative specs anchor to " + cwd() + ")");
     }
 
-    /** git clone url → plugins/src/&lt;name&gt; → 写 java: 目录源条目。 */
+    /** git clone url → plugins/src/&lt;name&gt; → 写 java: 目录源条目。clone 进程限时
+     *  {@link #GIT_CLONE_TIMEOUT_SECONDS}s(反挂死:输出经并发排水线程读取,避免 git 输出
+     *  填满管道阻塞进程后 waitFor 永不返回)。 */
     private Installed gitCloneTo(Path profileDir, String url, String name, PrintStream out) throws InstallException {
         Path dst = profileDir.resolve("plugins/src").resolve(name);
         if (!Files.exists(dst)) {
@@ -278,16 +284,29 @@ public final class PluginInstaller {
             } catch (IOException e) {
                 throw new InstallException("cannot run git (is git on PATH?): " + e.getMessage(), e);
             }
-            String output;
-            try (InputStream is = proc.getInputStream()) {
-                output = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-            } catch (IOException e) {
-                output = "<unreadable git output>";
-            }
+            String[] output = {""};
+            Thread drainer = new Thread(() -> {
+                try (InputStream is = proc.getInputStream()) {
+                    output[0] = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                } catch (IOException ignored) {
+                    // 排水失败不影响主流程(仅诊断输出)
+                }
+            }, "dshj-git-drain");
+            drainer.setDaemon(true);
+            drainer.start();
             try {
-                int rc = proc.waitFor();
-                if (rc != 0) {
-                    throw new InstallException("git clone failed for " + url + ": " + output.trim());
+                if (!proc.waitFor(GIT_CLONE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    proc.destroyForcibly();
+                    throw new InstallException("git clone timed out after " + GIT_CLONE_TIMEOUT_SECONDS
+                            + "s for " + url + ": " + output[0].trim());
+                }
+                if (proc.exitValue() != 0) {
+                    try {
+                        drainer.join(2000);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    throw new InstallException("git clone failed for " + url + ": " + output[0].trim());
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -298,6 +317,11 @@ public final class PluginInstaller {
         }
         out.println("dshj plugin add: cloned " + url + " -> " + dst);
         return writeEntry(profileDir, name, "java:./plugins/src/" + name);
+    }
+
+    /** github 规范 clone URL(公开仓库经与本地 git 源完全相同的 clone 路径,M7-2)。 */
+    static String githubUrl(String owner, String repo) {
+        return "https://github.com/" + owner + "/" + repo + ".git";
     }
 
     // ---- 配置写回 ----

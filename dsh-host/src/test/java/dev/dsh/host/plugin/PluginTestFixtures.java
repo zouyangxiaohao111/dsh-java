@@ -56,6 +56,40 @@ public final class PluginTestFixtures {
         return file;
     }
 
+    /**
+     * 写一个<b>自包含 Java 插件 git 仓库</b>(M7-2 验证克隆源):标准
+     * {@code src/main/java/} 布局 + README + build.gradle 外壳,插件实现
+     * {@code dev.dsh.cordis.Plugin}(核心 provided,经测试运行 classpath),提供
+     * {@code git-greet} 服务。返回仓库根(调用方 git init + commit 后经
+     * {@code java:git+<url>} 走真实 clone 路径安装)。
+     */
+    public static Path writeGitPluginRepo(Path root) throws IOException {
+        Files.createDirectories(root.resolve("src/main/java/dev/acme/greeter"));
+        Files.writeString(root.resolve("src/main/java/dev/acme/greeter/GreetPlugin.java"), gitPluginSource());
+        Files.writeString(root.resolve("README.md"), "# greet-plugin\nM7-2 self-contained plugin repo\n");
+        Files.writeString(root.resolve("build.gradle"),
+                "dependencies {\n  implementation files('<dsh-cordis provided by harness>')\n}\n");
+        return root;
+    }
+
+    static String gitPluginSource() {
+        return "package dev.acme.greeter;\n"
+                + "import dev.dsh.cordis.*;\n"
+                + "public class GreetPlugin implements Plugin<Void> {\n"
+                + "  public String name() { return \"greet-plugin\"; }\n"
+                + "  public String[] provide() { return new String[]{\"git-greet\"}; }\n"
+                + "  public Object apply(Context ctx, Void cfg) {\n"
+                + "    ctx.provide(\"git-greet\", new Greeter(\"hi from git\"));\n"
+                + "    return null;\n"
+                + "  }\n"
+                + "  public static class Greeter {\n"
+                + "    public final String value;\n"
+                + "    public Greeter(String value) { this.value = value; }\n"
+                + "    public String greet() { return value; }\n"
+                + "  }\n"
+                + "}\n";
+    }
+
     static String jarPluginSource() {
         return "package com.acme.jar;\n"
                 + "import dev.dsh.cordis.*;\n"

@@ -2,10 +2,12 @@ package dev.dsh.host.plugin;
 
 import dev.dsh.cordis.Context;
 import dev.dsh.cordis.js.HostKind;
+import dev.dsh.cordis.js.PluginRuntimeResolver;
 import dev.dsh.cordis.loader.DshProfileReader;
 import dev.dsh.cordis.loader.Entry;
 import dev.dsh.cordis.loader.LoadedPlugin;
 import dev.dsh.cordis.loader.PluginLoaderService;
+import dev.dsh.cordis.reload.UrlPluginClassLoaderFactory;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -187,6 +189,62 @@ class PluginInstallerTest {
                 .hasMessageContaining("github");
     }
 
+    /**
+     * M7-2 全链路:自包含插件 git 仓库 → 真实 git clone 路径安装
+     * ({@code java:git+<url>} 与公开 {@code github:u/r} / {@code git+https://...} 共用
+     * 同一 {@code gitCloneTo})→ clone 落地 → loader 编译 → 类发现 → 插件进 registry →
+     * 配置写回可复用(全新 loader 重载同 cordis.yml 仍加载)。
+     */
+    @Test
+    void installGitSourceClonesCompilesAndLoadsIntoRegistry() throws Exception {
+        Assumptions.assumeTrue(gitAvailable(), "skipped: no git on PATH");
+        // ① 自包含插件 git 仓库(git init + commit,核心 provided 经测试运行时 classpath)
+        Path repo = tmp.resolve("greet-repo");
+        PluginTestFixtures.writeGitPluginRepo(repo);
+        git(repo, "init", "-q");
+        git(repo, "add", ".");
+        git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init");
+
+        // ② 真实 git clone 进程路径安装
+        PluginInstaller.Installed r = installer().install("web", "java:git+" + repo.toAbsolutePath(), out, err);
+
+        // ③ 断言:clone 落地(plugins/src/<name>/ 下是克隆出的仓库内容)+ 配置写回
+        Path dst = tmp.resolve("profiles/web/plugins/src/greet-repo");
+        assertThat(dst.resolve("src/main/java/dev/acme/greeter/GreetPlugin.java")).exists();
+        assertThat(r.name()).isEqualTo("greet-repo");
+        assertThat(r.source()).isEqualTo("java:./plugins/src/greet-repo");
+        Path yml = tmp.resolve("profiles/web/cordis.yml");
+        assertThat(read(yml)).contains("java:./plugins/src/greet-repo");
+
+        // ④ 断言:编译产物 + 插件加载进 registry + 配置写入可复用(注入输出目录可断言产物)
+        Context root = new Context();
+        Path outDir = tmp.resolve("out");
+        PluginLoaderService loader = new PluginLoaderService(root, new PluginRuntimeResolver(),
+                new UrlPluginClassLoaderFactory(), outDir);
+        try {
+            List<LoadedPlugin> loaded = loader.load(yml);
+            assertThat(loaded).hasSize(1);
+            LoadedPlugin lp = loaded.get(0);
+            assertThat(lp.kind()).isEqualTo(HostKind.JAVA);
+            assertThat(lp.plugin().name()).isEqualTo("greet-plugin");
+            assertThat(lp.ref()).contains("greet-repo");
+            // 编译产物落在输出目录 <name>.classes/
+            assertThat(outDir.resolve("greet-repo.classes/dev/acme/greeter/GreetPlugin.class")).exists();
+            // 插件 apply 提供的服务经 registry 可及
+            assertThat(gitGreet(root)).isEqualTo("hi from git");
+        } finally {
+            loader.dispose();
+            root.fiber.dispose().join();
+        }
+    }
+
+    @Test
+    void githubUrlConstructsPublicCloneUrl() {
+        // 公开 github:u/r 与本地 git 源共用 gitCloneTo;这里只断言 URL 构造
+        assertThat(PluginInstaller.githubUrl("deepseek-harness", "dsh-java"))
+                .isEqualTo("https://github.com/deepseek-harness/dsh-java.git");
+    }
+
     // ---- 失败与边界 ----
 
     @Test
@@ -268,6 +326,17 @@ class PluginInstallerTest {
         } finally {
             loader.dispose();
             root.fiber.dispose().join();
+        }
+    }
+
+    /** 经 registry 取 git 插件的 'git-greet' 服务并调用 greet()(反射,类在隔离 ClassLoader)。 */
+    private static String gitGreet(Context root) {
+        Object svc = root.get("git-greet");
+        if (svc == null) return null;
+        try {
+            return (String) svc.getClass().getMethod("greet").invoke(svc);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
     }
 
