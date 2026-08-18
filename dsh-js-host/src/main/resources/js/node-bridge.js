@@ -190,6 +190,7 @@ function send(obj) {
 const fnById = new Map()  // id → JS function
 const modById = new Map() // id → 已加载模块(CJS exports / ESM namespace)
 const ctxById = new Map() // id → ctx shim
+const objById = new Map() // id → live 对象 / iterable 视图(M7-7,经 invokeObj RPC 调用)
 let nextHandle = 1
 
 // ---- 值序列化(worker → Java)----
@@ -202,7 +203,46 @@ let nextHandle = 1
 //   - Symbol 值 → {$kind:'symbol'} 标记(不可序列化,保留键位;如 session-query-sqlite 的
 //     _persistenceBinding.identity);
 //   - 其余不可序列化类型仍抛明确错误。
-function serializeValue(v, seen) {
+// M7-7(通用句柄机制核心扩展):
+//   - 非数组 iterable/iterator → {$kind:'iter',id}:Java 侧得 Iterable/Iterator 代理,
+//     经 invokeObj RPC next(),遍历终结自动释放句柄(见 JsIterable);
+//   - live 对象(带原型方法的类实例等,opts.liveHandles 时)→ {$kind:'obj',id}:Java 侧得
+//     RemoteObject 代理,方法调用 RPC 回 worker(递归:方法返回的嵌套 live 对象也句柄化)。
+//   - 仅 fn 型 own 成员的对象(probe 类)仍是普通 JSON(方法 → fn 句柄,数据原样)——M5-NEEDS
+//     语义不变;类实例才走 live 句柄(带原型方法 = 需方法调用)。
+
+/** 是否可迭代对象(非数组):有 next() 或是 Symbol.iterator 可调(Set/Map/generator/...)。 */
+function isIteratorLike(v) {
+  if (v === null || typeof v !== 'object') return false
+  if (Array.isArray(v)) return false   // 数组仍是数据(JSON array),Java 侧 List
+  if (typeof v.next === 'function') return true
+  return typeof v[Symbol.iterator] === 'function'
+}
+
+/** 是否 live 对象(类实例 / 带原型方法):原型链上有非 Object.prototype 的 function 成员。 */
+function isLiveObject(v) {
+  if (v === null || typeof v !== 'object') return false
+  if (Array.isArray(v)) return false
+  for (let proto = Object.getPrototypeOf(v); proto !== null && proto !== Object.prototype; proto = Object.getPrototypeOf(proto)) {
+    for (const n of Object.getOwnPropertyNames(proto)) {
+      if (n === 'constructor') continue
+      const d = Object.getOwnPropertyDescriptor(proto, n)
+      if (d && (typeof d.value === 'function' || typeof d.get === 'function' || typeof d.set === 'function')) return true
+    }
+  }
+  return false
+}
+
+/** 把 iterable/iterator 归一成"只有 next()"的视图(Java 侧只调 next())。 */
+function makeIterableView(v) {
+  const iter = (typeof v.next === 'function') ? v : v[Symbol.iterator]()
+  const view = { next: () => iter.next() }
+  view[Symbol.iterator] = () => view
+  return view
+}
+
+function serializeValue(v, seen, opts) {
+  const liveHandles = !!(opts && opts.liveHandles === true)
   if (v === undefined) return { $kind: 'undefined' }
   if (v === null) return null
   const t = typeof v
@@ -222,15 +262,28 @@ function serializeValue(v, seen) {
   }
   if (t === 'symbol') return { $kind: 'symbol' }
   if (t === 'object') {
+    // 非数组 iterable/iterator:一律跨桥为句柄(Java 可遍历;数组仍是数据)。
+    if (isIteratorLike(v)) {
+      const id = nextHandle++
+      objById.set(id, makeIterableView(v))
+      return { $kind: 'iter', id }
+    }
+    // live 对象:仅方法返回上下文(liveHandles)句柄化 —— provide/emit 等保持 M5-NEEDS
+    // (方法 → fn 句柄、数据 → JSON),不破坏 Java 侧读提供值(Map)的既有语义。
+    if (liveHandles && isLiveObject(v)) {
+      const id = nextHandle++
+      objById.set(id, v)
+      return { $kind: 'obj', id }
+    }
     const active = seen || new WeakSet()
     if (active.has(v)) return { $kind: 'cycle' }   // 循环引用:降级为标记(此前抛错挂加载)
     active.add(v)
     let out
     if (Array.isArray(v)) {
-      out = v.map(x => serializeValue(x, active))
+      out = v.map(x => serializeValue(x, active, opts))
     } else {
       out = {}
-      for (const k of Object.keys(v)) out[k] = serializeValue(v[k], active)
+      for (const k of Object.keys(v)) out[k] = serializeValue(v[k], active, opts)
     }
     active.delete(v)
     return out
@@ -277,6 +330,14 @@ function deserializeValue(v) {
     return c
   }
   if (v.$kind === 'svc') return makeServiceProxy(v.id)
+  if (v.$kind === 'obj' || v.$kind === 'iter') {
+    // 自持句柄(本 worker 创建的 live 对象/iterable 视图)读回 → 返回本地对象,免跨桥往返,
+    // 也避免"同步泵中调用自身句柄 → Java 转发回本 worker → 泵内延迟 → 死锁"的循环。
+    // 外部 worker 的句柄 → Proxy(经 invokeService → Java 转发 invokeObj 回属主 worker)。
+    const local = objById.get(v.id)
+    if (local !== undefined) return local
+    return makeServiceProxy(v.id)
+  }
   if (Array.isArray(v)) return v.map(deserializeValue)
   const out = {}
   for (const k of Object.keys(v)) out[k] = deserializeValue(v[k])
@@ -294,6 +355,29 @@ function makeServiceProxy(handle) {
   return new Proxy(callable, {
     get(target, prop, receiver) {
       if (prop === 'then') return undefined
+      if (prop === Symbol.iterator) {
+        // Java Iterable/Iterator 服务 → JS 可 for...of(经桥 RPC hasNext/next 适配)。
+        // 先尝试经 iterator() 拿到 Java 侧 java.util.Iterator 句柄;若对象本身是
+        // Iterator(ServiceInvoker 对 iterator() 返回自身),直接用原句柄。
+        return function () {
+          let itProxy
+          try {
+            itProxy = invoke('iterator', [])   // 返回 svc 句柄代理(deserializeValue)
+          } catch (e) {
+            itProxy = callable                  // 非 Iterable:视原句柄为迭代器
+          }
+          const iterator = {
+            next() {
+              // itProxy.next() → invokeService('next') → ServiceInvoker 返回 {done,value}
+              const step = itProxy.next()
+              if (step && typeof step === 'object' && 'done' in step) return step
+              return { done: true, value: undefined }
+            },
+          }
+          iterator[Symbol.iterator] = () => iterator
+          return iterator
+        }
+      }
       if (typeof prop === 'symbol') return undefined
       return (...args) => invoke(String(prop), args)
     },
@@ -416,7 +500,13 @@ function makeCtx(ctxId) {
     effect: (body, label) => {
       const stepped = body()
       const disposers = []
-      if (stepped && typeof stepped.next === 'function' && typeof stepped[Symbol.iterator] === 'function') {
+      // generator body 检测:真 generator 是对象(有 next + Symbol.iterator)。排除函数 ——
+      // 服务代理(makeServiceProxy,可调用函数)的 get trap 对任意属性都返回函数,
+      // Symbol.iterator 现已可调用(Java Iterable 遍历);若把代理误判成 generator 会去调
+      // .next() → Java 侧 "no public method 'next'"(M7-7 回归:agent-loop setFactory 的
+      // effect body 返回 Java disposer 句柄)。真 generator 恒为 object,不受影响。
+      if (stepped && typeof stepped !== 'function'
+          && typeof stepped.next === 'function' && typeof stepped[Symbol.iterator] === 'function') {
         const iterator = stepped
         while (true) {
           const result = iterator.next()
@@ -778,11 +868,30 @@ async function handleRequest(msg) {
       const args = (msg.args || []).map(deserializeValue)
       let result = fn(...args)
       if (result && typeof result.then === 'function') result = await result   // macrotask 可 settle
-      return { type: 'result', id: msg.id, value: serializeValue(result) }
+      // M7-7:方法返回上下文 —— 返回值里的 live 对象 / iterable 句柄化(递归)。
+      return { type: 'result', id: msg.id, value: serializeValue(result, undefined, { liveHandles: true }) }
+    }
+    case 'invokeObj': {
+      if (typeof msg.handle !== 'number') throw new Error('bad obj handle ' + JSON.stringify(msg.handle))
+      const obj = objById.get(msg.handle)
+      if (obj === undefined) throw new Error('unknown obj handle ' + msg.handle)
+      const method = msg.method
+      if (typeof method !== 'string' || method.length === 0) throw new Error('bad obj method')
+      const fn = obj[method]
+      if (typeof fn !== 'function') throw new Error('no method "' + method + '" on obj handle ' + msg.handle)
+      const args = (msg.args || []).map(deserializeValue)
+      let result = fn.apply(obj, args)
+      if (result && typeof result.then === 'function') result = await result   // macrotask 可 settle
+      // M7-7:live 对象方法返回的嵌套 live 对象同样递归句柄化。
+      return { type: 'result', id: msg.id, value: serializeValue(result, undefined, { liveHandles: true }) }
     }
     case 'release': {
       if (msg.handle && typeof msg.handle === 'object' && msg.handle.$kind === 'fn') fnById.delete(msg.handle.id)
       else if (typeof msg.handle === 'number') fnById.delete(msg.handle)
+      return { type: 'result', id: msg.id, value: null }
+    }
+    case 'releaseObj': {
+      if (typeof msg.handle === 'number') objById.delete(msg.handle)
       return { type: 'result', id: msg.id, value: null }
     }
     case 'releaseCtx': {

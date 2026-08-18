@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.lang.ref.Cleaner;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -22,6 +23,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -67,6 +69,11 @@ public final class NodeWorkerJsHost implements JsHost {
     private final Map<Long, Object> services = new ConcurrentHashMap<>();
     /** ctx handle → 桥(路由 ctxCall)。 */
     private final Map<Long, NodeWorkerBridge> bridges = new ConcurrentHashMap<>();
+    /** M7-7:JS 侧 live 对象 / iterable 句柄 → Java 侧包装(RemoteObject / JsIterable)。
+     *  worker 经 invokeService 调用这些句柄时,Java 转发 invokeObj 回属主 worker。 */
+    private final Map<Long, Object> remoteObjects = new ConcurrentHashMap<>();
+    /** M7-7:remote 句柄 GC 后兜底释放(代理不可达时 worker 侧注册表不泄漏)。 */
+    private final Cleaner cleaner = Cleaner.create();
 
     private final AtomicLong seq = new AtomicLong(1);
     private final AtomicLong serviceSeq = new AtomicLong(1_000_000);
@@ -286,11 +293,30 @@ public final class NodeWorkerJsHost implements JsHost {
         return new NodeRef(id, "svc");
     }
 
-    /** 反射调用远程 Java 服务(worker 经 invokeService 消息发起)。 */
+    /** 反射调用远程 Java 服务(worker 经 invokeService 消息发起);JS 侧 live 对象句柄 → 转发 worker。 */
     Object invokeService(long handle, String method, List<Object> args) {
         Object svc = services.get(handle);
-        if (svc == null) throw new NodeBridgeError("unknown service handle " + handle);
-        return ServiceInvoker.invoke(svc, method, args);
+        if (svc != null) return ServiceInvoker.invoke(svc, method, args);
+        // M7-7:JS 侧句柄(RemoteObject / JsIterable 注册)转发到属主 worker 执行(invokeObj)。
+        // 注意:reader 线程上不得阻塞转发(会死锁)——调用方(respondToWorker)已在转发前
+        // 分流到 helper 线程;此处供非 reader 线程(应用线程 / helper 线程)使用。
+        if (remoteObjects.containsKey(handle)) return invokeObj(handle, method, args);
+        throw new NodeBridgeError("unknown service handle " + handle);
+    }
+
+    /** 阻塞调用 JS 侧 live 对象方法(RemoteObject / JsIterable 的 RPC 底层)。 */
+    Object invokeObj(long handle, String method, List<Object> args) {
+        ObjectNode payload = mapper.createObjectNode();
+        payload.put("handle", handle);
+        payload.put("method", method);
+        payload.set("args", toJsonArray(args));
+        return fromJsonNode(request("invokeObj", payload));
+    }
+
+    /** 释放一个 JS 侧 live 对象 / iterable 句柄(worker 删除 objById 条目)。fire-and-forget。 */
+    void releaseObj(long handle) {
+        remoteObjects.remove(handle);
+        sendNoWait("releaseObj", jsonOf("handle", handle));
     }
 
     boolean isReaderThread(Thread t) { return t == readerThread; }
@@ -460,6 +486,14 @@ public final class NodeWorkerJsHost implements JsHost {
                 result = bridge.handleCtxCall(msg);
             } else {
                 long handle = msg.path("handle").asLong(-1);
+                // M7-7:worker 调 JS 侧句柄(跨 worker / 回读)需要转发 invokeObj 回属主 worker。
+                // reader 线程上不能阻塞转发(否则读不到 invokeObj 的回复 → 死锁):分到 helper
+                // 线程执行 + 回复。自持句柄(本 worker 自己创建的)经 deserializeValue 自返本地
+                // 对象,不会走到这里。
+                if (remoteObjects.containsKey(handle) && Thread.currentThread() == readerThread) {
+                    forwardRemoteAsync(msg, id);
+                    return;
+                }
                 String method = msg.path("method").asText("");
                 result = toJsonNode(invokeService(handle, method, toJavaArgs(msg.path("args"))));
             }
@@ -475,6 +509,32 @@ public final class NodeWorkerJsHost implements JsHost {
             resp.put("error", String.valueOf(t.getMessage()));
             write(resp.toString());
         }
+    }
+
+    /** reader 线程上的 JS 侧句柄转发:helper 线程阻塞等 invokeObj 回复,reader 线程继续读。 */
+    private void forwardRemoteAsync(JsonNode msg, long id) {
+        Thread t = new Thread(() -> {
+            try {
+                long handle = msg.path("handle").asLong(-1);
+                String method = msg.path("method").asText("");
+                Object result = invokeService(handle, method, toJavaArgs(msg.path("args")));
+                ObjectNode resp = mapper.createObjectNode();
+                resp.put("type", "ctxResult");
+                resp.put("id", id);
+                resp.set("result", result == null ? NullNode.instance : toJsonNode(result));
+                write(resp.toString());
+            } catch (Throwable t2) {
+                ObjectNode resp = mapper.createObjectNode();
+                resp.put("type", "ctxResult");
+                resp.put("id", id);
+                resp.put("error", String.valueOf(t2.getMessage()));
+                try { write(resp.toString()); } catch (RuntimeException ignored) {
+                    // worker 已关闭:放弃
+                }
+            }
+        }, "dsh-node-remote-forward");
+        t.setDaemon(true);
+        t.start();
     }
 
     private void failAllPending(String reason) {
@@ -514,6 +574,19 @@ public final class NodeWorkerJsHost implements JsHost {
             n.put("id", ref.id());
             return n;
         }
+        // M7-7:JS 侧句柄原样回传(JsIterable 也是 Iterable,必须先于 Iterable 物化判定)。
+        if (value instanceof RemoteObject ro) {
+            ObjectNode n = mapper.createObjectNode();
+            n.put("$kind", "obj");
+            n.put("id", ro.handle());
+            return n;
+        }
+        if (value instanceof JsIterable ji) {
+            ObjectNode n = mapper.createObjectNode();
+            n.put("$kind", "iter");
+            n.put("id", ji.handle());
+            return n;
+        }
         if (value instanceof String s) return mapper.getNodeFactory().textNode(s);
         if (value instanceof Boolean b) return mapper.getNodeFactory().booleanNode(b);
         if (value instanceof Integer i) return mapper.getNodeFactory().numberNode(i);
@@ -528,7 +601,10 @@ public final class NodeWorkerJsHost implements JsHost {
             for (Map.Entry<?, ?> e : map.entrySet()) n.set(String.valueOf(e.getKey()), toJsonNode(e.getValue()));
             return n;
         }
-        if (value instanceof Iterable<?> it) return toJsonArray(it);
+        // 仅纯数据集合(Collection)物化;live iterable 服务(如 AgentRegistry,非 Collection)
+        // 走 svc 句柄 —— JS 侧经服务代理 Symbol.iterator RPC hasNext/next 遍历(目标行同形:
+        // ctx.agents 既有 .list() 方法又可被 for...of 遍历)。数组同样物化。
+        if (value instanceof Collection<?> c) return toJsonArray(c);
         if (value instanceof Object[] arr) return toJsonArray(List.of(arr));
         // 其他 Java 对象 → 远程服务句柄(worker 侧经 Proxy 反射调用)
         return toJsonNode(registerService(value));
@@ -557,6 +633,20 @@ public final class NodeWorkerJsHost implements JsHost {
             long id = v.path("id").asLong(-1);
             switch (kind) {
                 case "fn", "module", "ctx", "svc" -> { return new NodeRef(id, kind); }
+                case "obj" -> {
+                    // JS 侧 live 对象 → RemoteObject(方法调用 RPC 回 worker);注册 remote 句柄
+                    // 供 worker 经 invokeService 调用时转发,并挂 Cleaner 兜底 GC 释放。
+                    RemoteObject ro = new RemoteObject(this, id);
+                    remoteObjects.put(id, ro);
+                    cleaner.register(ro, () -> releaseObj(id));
+                    return ro;
+                }
+                case "iter" -> {
+                    JsIterable ji = new JsIterable(this, id);
+                    remoteObjects.put(id, ji);
+                    cleaner.register(ji, () -> releaseObj(id));
+                    return ji;
+                }
                 case "undefined" -> { return UNDEFINED; }
                 case "bigint" -> { return new BigInteger(v.path("value").asText()); }
                 default -> { return fromPlain(v); }
@@ -599,6 +689,21 @@ public final class NodeWorkerJsHost implements JsHost {
 
     private static final class ServiceInvoker {
         static Object invoke(Object svc, String method, List<Object> args) {
+            // M7-7:java.util.Iterator 的 JS 迭代器协议适配 —— JS for...of 调 next() 期望
+            // {done, value}(Java Iterator.next() 直接返回元素,协议不匹配)。hasNext/next
+            // 特判成 {done, value};iterator() 返回自身(不是 Iterable 的对象也能被 for...of)。
+            if (svc instanceof java.util.Iterator<?> it) {
+                if ("iterator".equals(method)) return it;
+                if ("hasNext".equals(method)) return it.hasNext();
+                if ("next".equals(method)) {
+                    if (!it.hasNext()) return Map.of("done", true);
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("done", false);
+                    m.put("value", it.next());
+                    return m;
+                }
+                if ("remove".equals(method)) { it.remove(); return null; }
+            }
             if ("$call".equals(method)) {
                 if (svc instanceof java.util.function.Function && !args.isEmpty()) {
                     return ((java.util.function.Function<Object, Object>) svc).apply(args.get(0));
@@ -694,6 +799,7 @@ public final class NodeWorkerJsHost implements JsHost {
         }
         services.clear();
         bridges.clear();
+        remoteObjects.clear();
         failAllPending("node worker closed");
     }
 
