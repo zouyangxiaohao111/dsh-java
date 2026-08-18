@@ -698,6 +698,12 @@ async function handleRequest(msg) {
       const result = (0, eval)(msg.script)
       return { type: 'result', id: msg.id, value: serializeValue(result) }
     }
+    case 'evalJs': {
+      if (typeof msg.expr !== 'string') throw new Error('bad evalJs expr')
+      // M7-6 disabled 通道:!!js 表达式求值(scope = process + dshHomePath,与 config 通道
+      // 的 evalJsExpression 同函数)。结果跨桥返回;求值失败由 worker 侧以 error 消息上报。
+      return { type: 'result', id: msg.id, value: serializeValue(evalJsExpression(msg.expr)) }
+    }
     case 'createCtx': {
       const id = nextHandle++
       makeCtx(id)

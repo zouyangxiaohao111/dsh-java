@@ -1,5 +1,7 @@
 package dev.dsh.cordis.loader;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 import dev.dsh.cordis.Context;
 import dev.dsh.cordis.Fiber;
 import dev.dsh.cordis.FiberState;
@@ -258,16 +260,54 @@ public final class PluginLoaderService implements AutoCloseable {
 
     // ---- 内部:加载 ----
 
-    /** 全量加载 entries(不注册):任一失败 → 释放已建宿主并抛出(旧态未动)。 */
+    /** 全量加载 entries(不注册):任一失败 → 释放已建宿主并抛出(旧态未动)。
+     *  M7-6 disabled 通道:Entry 携带 {@code {$dshJs}} disabled 标记 → 加载后求值,为真则排除。 */
     private List<LoadedPlugin> loadAll(List<Entry> entries) throws Exception {
         List<LoadedPlugin> staged = new ArrayList<>();
         try {
-            for (Entry e : entries) staged.add(loadPlugin(e));
+            for (Entry e : entries) {
+                LoadedPlugin lp = loadPlugin(e);
+                if (disabledByJsEval(e, lp)) {      // disabled !!js 求值为真 → 插件不加载
+                    closeQuietly(lp);               // 关闭失败记日志,不得阻断整批加载
+                    continue;
+                }
+                staged.add(lp);
+            }
             return staged;
         } catch (Exception ex) {
             for (LoadedPlugin lp : staged) closeQuietly(lp);
             throw ex;
         }
+    }
+
+    /**
+     * 求值条目的 disabled 标记({@code {$dshJs: expr}},M7-6):表达式在宿主(worker)侧求值,
+     * scope 与 config 通道一致(process + dshHomePath)。结果 truthy → 插件禁用(不加载);
+     * 求值失败 → 保守按禁用处理(宁可少载,不误启本应关闭的插件)。无标记 / 无宿主 → false。
+     */
+    private boolean disabledByJsEval(Entry entry, LoadedPlugin lp) {
+        JsonNode d = entry.disabled();
+        if (d == null || !d.isObject()) return false;
+        JsonNode exprNode = d.get(DshProfileReader.JS_EXPR_KEY);
+        if (exprNode == null || !exprNode.isTextual()) return false;   // 非 {$dshJs} 标记 → 不处理
+        JsHost host = lp.host();
+        if (host == null) return true;               // 无宿主可求值 → 保守禁用
+        try {
+            return isJsTruthy(host.evalJs(exprNode.asText()));
+        } catch (Throwable t) {
+            ctx.logger().error("disabled !!js eval failed for '" + entry.name() + "': "
+                    + exprNode.asText() + " -> treating as disabled", t);
+            return true;
+        }
+    }
+
+    /** JS truthiness(disabled 求值结果:false/0/""/null/undefined → 启用,其余 → 禁用)。 */
+    private static boolean isJsTruthy(Object v) {
+        if (v == null) return false;
+        if (v instanceof Boolean b) return b;
+        if (v instanceof Number n) return n.doubleValue() != 0;
+        if (v instanceof String s) return !s.isEmpty();
+        return true;
     }
 
     private LoadedPlugin loadPlugin(Entry entry) throws Exception {

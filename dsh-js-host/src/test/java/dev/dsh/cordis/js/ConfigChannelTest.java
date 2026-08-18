@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * M7-5 配置通道:worker 侧(apply 之前)schemastery/zod static Config 默认化 + {@code !!js} 求值。
@@ -158,5 +159,52 @@ class ConfigChannelTest {
             assertThat(tree.path("homeRoot").asText()).isEqualTo(tmp.resolve("sessions").toString());
         }
         root.fiber.dispose().join();
+    }
+
+    @Test
+    void jsExpressionEvalFailureKeepsOriginalAndApplies() throws Exception {
+        // M7-5 遗留:config 里 !!js 求值失败(非法表达式)→ 保留表达式原文(不裸传/不抛),
+        // apply 仍跑,不挂加载。
+        Path plugin = writePlugin("js-broken.cjs", """
+                module.exports = {
+                  name: 'js-broken',
+                  apply(ctx, config) { ctx.emit('applied', JSON.stringify(config)); }
+                }
+                """);
+        Context root = new Context();
+        AtomicReference<String> got = capture(root);
+        Map<String, String> env = Map.of(
+                "DSH_TEST_HOME", tmp.toString(),
+                "DSH_HOME", tmp.toString());
+        try (JsHost host = new NodeWorkerJsHost(Path.of(""), List.of(), env)) {
+            Object config = Map.of("bad", Map.of("$dshJs", "process.env.DSH_TEST_HOME +"));
+            root.plugin(new JsPluginAdapter(host, host.loadModule(plugin)), config);
+            JsonNode tree = new ObjectMapper().readTree(got.get());
+            // 求值失败 → worker 记日志 + 保留表达式原文,apply 收到字符串,不挂加载
+            assertThat(tree.path("bad").asText()).isEqualTo("process.env.DSH_TEST_HOME +");
+        }
+        root.fiber.dispose().join();
+    }
+
+    // ---- M7-6 disabled 通道:evalJs(scope = process + dshHomePath,与 config 通道同函数)----
+
+    @Test
+    void evalJsScopeMatchesConfigChannel() throws Exception {
+        Map<String, String> env = Map.of("DSH_HOME", tmp.toString());
+        try (NodeWorkerJsHost host = new NodeWorkerJsHost(Path.of(""), List.of(), env)) {
+            // process.platform 求值(disabled 通道的典型表达式:platform 相关)
+            assertThat(host.evalJs("process.platform !== 'zzz-never'")).isEqualTo(true);
+            assertThat(host.evalJs("process.platform === 'zzz-never'")).isEqualTo(false);
+            // dshHomePath scope(与 config 通道 evalJsMarkers 同函数,同求值面)
+            assertThat(host.evalJs("dshHomePath('sessions')")).isEqualTo(tmp.resolve("sessions").toString());
+        }
+    }
+
+    @Test
+    void evalJsSyntaxErrorThrows() throws Exception {
+        try (NodeWorkerJsHost host = new NodeWorkerJsHost()) {
+            assertThatThrownBy(() -> host.evalJs("process.platform +"))
+                    .isInstanceOf(NodeBridgeError.class);
+        }
     }
 }

@@ -685,6 +685,7 @@ class PluginLoaderServiceTest {
                 @Override public PluginModule eval(String script) { return real.eval(script); }
                 @Override public PluginModule require(String specifier) { return real.require(specifier); }
                 @Override public PluginModule loadModule(Path file) { return real.loadModule(file); }
+                @Override public Object evalJs(String expr) { return real.evalJs(expr); }
                 @Override public void close() {
                     closed.add(this);
                     try { real.close(); }

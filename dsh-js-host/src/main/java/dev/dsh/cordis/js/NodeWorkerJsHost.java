@@ -170,6 +170,13 @@ public final class NodeWorkerJsHost implements JsHost {
         return nodePluginModule(request("eval", Map.of("script", script)));
     }
 
+    /** 求值一个 dsh {@code !!js} 表达式(M7-6 disabled 通道):worker 侧 evalJsExpression 求值
+     *  (scope = process + dshHomePath),结果返回原始值(boolean/number/string);undefined → null。 */
+    @Override public Object evalJs(String expr) {
+        Object v = fromJsonNode(request("evalJs", Map.of("expr", expr)));
+        return v == UNDEFINED ? null : v;
+    }
+
     @Override public PluginModule require(String specifier) {
         return nodePluginModule(request("require", Map.of("specifier", specifier)));
     }

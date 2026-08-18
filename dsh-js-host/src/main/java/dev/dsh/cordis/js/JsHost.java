@@ -23,6 +23,13 @@ public interface JsHost extends AutoCloseable {
     /** Load a module file by absolute path (CJS or ESM). */
     PluginModule loadModule(Path file);
 
+    /**
+     * 求值一个 dsh {@code !!js} 表达式(scope = process + dshHomePath,与 config 通道
+     * {@code node-bridge.js evalJsExpression} 同面)。返回求值结果(原始值:Boolean/Number/
+     * String/null)。M7-6 disabled 通道用:loader 在加载前求值 {@code disabled} 标记。
+     */
+    Object evalJs(String expr);
+
     @Override
     void close();
 }

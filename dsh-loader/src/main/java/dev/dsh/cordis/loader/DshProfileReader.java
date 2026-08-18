@@ -57,15 +57,19 @@ import java.util.Map;
  * 不匹配记日志跳过)。插入的行被索引,同层后续 patch 可继续定向它们。
  *
  * <p><b>产出</b>:组合后的行为我们的 {@link Entry} 列表(供 {@link PluginLoaderService}
- * {@code loadEntries} 消费)。未启用行(disabled 为真 / 非空 JS 表达式,保守跳过)与
- * group 容器行不产出;{@code config} 透传到 {@link Entry#config()}。
+ * {@code loadEntries} 消费)。未启用行(disabled 为字面量真 / 非空字符串 / 无法求值的对象,
+ * 保守跳过)与 group 容器行不产出;{@code config} 透传到 {@link Entry#config()}。
  *
  * <p><b>JS 表达式({@code !!js})</b>:patch 解析用 SnakeYAML 自定义构造器,把 {@code !!js}
  * 标量(如 {@code dshHomePath('sessions')})解析成显式标记对象
  * {@code {"$dshJs": "<expr>"}}(不裸传字符串,防 config 通道把它当普通文本)。config 里的
  * 标记原样透传到 worker,由 worker 侧在 apply 前求值(M7-5,node-bridge.js 的
- * {@code evalJsMarkers};scope = process + dshHomePath);{@code disabled} 里的表达式无法在
- * Java 侧求值 → 保守当作未启用跳过(宁可少载一个插件,也不误启一个本应关闭的插件)。
+ * {@code evalJsMarkers};scope = process + dshHomePath)。
+ *
+ * <p><b>disabled 通道(M7-6)</b>:{@code disabled: {$dshJs: expr}} 标记不再在 Java 侧保守跳过
+ * —— 行保留并透传给 loader,由 loader 在加载前让宿主求值表达式(scope 同 config);
+ * 求值为真 → 插件不加载,为假 → 正常加载;求值失败 → 保守按禁用处理(宁可少载,不误启
+ * 本应关闭的插件)。标记对象经 {@link Entry#disabled()} 携带到 {@link PluginLoaderService}。
  */
 public final class DshProfileReader {
 
@@ -301,25 +305,36 @@ public final class DshProfileReader {
                 warn("composed entry without id skipped");
                 continue;
             }
-            if (isDisabled(row)) continue;                 // 未启用行(含无法求值的 !!js 表达式)
+            JsonNode disabled = row.get("disabled");
+            if (isLiteralDisabled(disabled)) continue;         // 字面量禁用(布尔真/非空串/无法求值的对象)
             if (row.path("group").asBoolean(false)) continue;  // group 容器行无模块可加载
             String module = row.path("name").asText(null);
             if (module == null || module.isBlank()) continue;  // 无模块说明符
             JsonNode config = row.get("config");
-            out.add(new Entry(id.trim(), module.trim(), null, null, null, config));
+            // disabled 为 {$dshJs: expr} 标记对象 → 不再保守跳过,经 Entry.disabled 透传给
+            // loader,由 loader 让宿主求值(M7-6;scope = process + dshHomePath,同 config 通道)。
+            JsonNode disabledMarker = isJsMarker(disabled) ? disabled : null;
+            out.add(new Entry(id.trim(), module.trim(), null, null, null, config, disabledMarker));
         }
         return out;
     }
 
-    /** disabled 判定:布尔真、或非空字符串、或 !!js 标记对象(Java 侧无法求值 → 保守跳过)。 */
-    private static boolean isDisabled(JsonNode row) {
-        JsonNode d = row.get("disabled");
+    /**
+     * 字面量 disabled 判定:布尔真、非空字符串、或无法求值的对象(→ 禁用)。
+     * {@code {$dshJs: expr}} 标记对象除外 —— 不在这里判定,交给 loader 在宿主求值(M7-6)。
+     */
+    private static boolean isLiteralDisabled(JsonNode d) {
         if (d == null || d.isNull() || d.isMissingNode()) return false;
         if (d.isBoolean()) return d.asBoolean();
         if (d.isTextual()) return !d.asText().trim().isEmpty();
-        // !!js 标记对象:Java 侧无法求值 → 保守跳过(宁可少载,不误启本应关闭的插件)
-        if (d.isObject()) return true;
+        if (d.isObject()) return !isJsMarker(d);   // 标记对象交给 worker;其余对象无法求值 → 保守禁用
         return d.asBoolean(false);
+    }
+
+    /** 是否为 {@code {$dshJs: expr}} 标记对象(与 config 通道同形状,worker 侧 evalJsMarkers 同识别)。 */
+    static boolean isJsMarker(JsonNode d) {
+        return d != null && d.isObject() && d.size() == 1
+                && d.hasNonNull(JS_EXPR_KEY) && d.path(JS_EXPR_KEY).isTextual();
     }
 
     /** 把 patch 列表解析为 JsonNode 数组;非顶层数组/非法行 → fail loud(镜像 dsh)。

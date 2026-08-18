@@ -158,6 +158,14 @@ zod `.parse`)。**12 行 B 组已降为 A 组,51 行全部是「零 config」**,
 > 跳过」。因此 **pwsh-sandbox / tool-pwsh 在 Windows 上仍不加载**(round-m7-5-01 日志无此二行),
 > 与修补前一致。「!!js 相关的 D 组在 Windows 上应能求值并加载」的预期**未达成**:这是 disabled
 > 通道,不是 config 通道 —— 修补范围之外。
+>
+> **M7-6 落地**:disabled 通道已接到 worker 求值(3288b6a 之后,独立提交)。`DshProfileReader`
+> 对 `{$dshJs: expr}` disabled 标记不再保守剔除 —— 行保留,标记经 `Entry.disabled()` 透传给
+> loader,loader 在加载前让宿主求值(scope = process + dshHomePath,与 config 通道同函数
+> `evalJsExpression`);求值 truthy → 插件不加载,求值失败 → 保守按禁用处理。**pwsh-sandbox /
+> tool-pwsh 在 Windows 上不再被保守跳过**(`process.platform !== 'win32'` 求值为 false → 加载),
+> D 组 +2 行进入"可加载"面;bash-sandbox / tool-bash 由求值正确禁用(与保守跳过同结果)。
+> 注:强制启用后 pwsh 是否还有桥/服务注入问题未在本次实验复核(超出 disabled 通道范围)。
 
 | 行 | base 表达式 | Windows 实际 | Java 处理 | 备注 |
 |---|---|---|---|---|

@@ -20,18 +20,27 @@ import java.util.Locale;
  *   <li>{@code mainClass} — 可选,jar 插件的显式入口类名(缺省扫描 {@code implements Plugin} /
  *       ServiceLoader 发现);</li>
  *   <li>{@code config} — 可选插件配置(JSON/YAML 节点,dsh 的 {@code config} 透传);null = 无配置。</li>
+ *   <li>{@code disabled} — dsh profile 行的 {@code disabled} 值(M7-6):{@code {$dshJs: expr}}
+ *       标记对象 → 由 loader 交给宿主求值(truthy → 插件不加载);null = 无 disabled 表达式
+ *       (字面量禁用已在 compose 阶段剔除)。</li>
  * </ul>
  */
-public record Entry(String name, String source, String path, HostKind host, String mainClass, JsonNode config) {
+public record Entry(String name, String source, String path, HostKind host, String mainClass, JsonNode config,
+                    JsonNode disabled) {
 
     /** 4 参便捷构造(无 {@code mainClass}/{@code config})——保持旧调用方兼容。 */
     public Entry(String name, String source, String path, HostKind host) {
-        this(name, source, path, host, null, null);
+        this(name, source, path, host, null, null, null);
     }
 
     /** 5 参便捷构造(无 {@code config})——保持旧调用方兼容。 */
     public Entry(String name, String source, String path, HostKind host, String mainClass) {
-        this(name, source, path, host, mainClass, null);
+        this(name, source, path, host, mainClass, null, null);
+    }
+
+    /** 6 参便捷构造(无 {@code disabled})——保持旧调用方兼容。 */
+    public Entry(String name, String source, String path, HostKind host, String mainClass, JsonNode config) {
+        this(name, source, path, host, mainClass, config, null);
     }
 
     /** 从 yml 节点解析;{@code name} 缺省回退到 dsh 写法的 {@code id}。 */

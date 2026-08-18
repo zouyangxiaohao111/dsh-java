@@ -10,6 +10,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -211,7 +212,7 @@ class DshProfileReaderTest {
     }
 
     @Test
-    void jsDisabledExpressionRowsSkippedConservatively() throws Exception {
+    void jsDisabledExpressionRowsPassedToLoader() throws Exception {
         writeInstall();
         writeBundle(home().resolve("vendor/dsh/node_modules"), "@test/bundle-dis", """
                 - insert:
@@ -224,8 +225,13 @@ class DshProfileReaderTest {
         writeProfile(home().resolve("profiles/test"), "[\"@test/bundle-dis\"]", null);
 
         List<Entry> entries = new DshProfileReader().load(home().resolve("profiles/test"), installAnchor());
-        // disabled 表达式无法在 Java 侧求值 → 保守跳过(避免误启本应关闭的插件)
-        assertThat(entries).extracting(Entry::name).containsExactly("enabled-row");
+        // M7-6 disabled 通道:{$dshJs} 标记不再保守剔除 → 行透传给 loader,Entry.disabled 携带标记,
+        // 由 loader 在宿主求值(scope = process + dshHomePath)。字面量禁用(布尔真/串)仍在 compose 剔除。
+        assertThat(entries).extracting(Entry::name).containsExactly("tool-bash", "enabled-row");
+        assertThat(entries.get(0).disabled()).isNotNull();
+        assertThat(entries.get(0).disabled().path(DshProfileReader.JS_EXPR_KEY).asText())
+                .isEqualTo("process.platform === 'win32'");
+        assertThat(entries.get(1).disabled()).isNull();
     }
 
     @Test
@@ -324,6 +330,55 @@ class DshProfileReaderTest {
         }
     }
 
+    // ---- disabled !!js 通道:loader 让宿主求值(compose 保留标记行 → loadEntries 求值过滤)----
+
+    @Test
+    void disabledJsExpressionEvaluatedByHostAndFiltersRows() throws Exception {
+        // M7-6 disabled 通道端到端:{$dshJs} 表达式在宿主求值(scope = process + dshHomePath)。
+        // 平台无关表达式(process.platform 永不为 'zzz-never'):真 → 插件不加载 / 假 → 加载。
+        // 求值失败(语法错误)→ 保守按禁用处理。本地 CJS 插件走 Graal 宿主(无需真 Node)。
+        writeInstall();
+        writeBundle(home().resolve("vendor/dsh/node_modules"), "@test/bundle-dis-eval", """
+                - insert:
+                    - id: disabled-true
+                      name: './disabled-true.js'
+                      disabled: !!js process.platform !== 'zzz-never'
+                    - id: enabled-false
+                      name: './enabled-false.js'
+                      disabled: !!js process.platform === 'zzz-never'
+                    - id: disabled-broken
+                      name: './disabled-broken.js'
+                      disabled: !!js process.platform +
+                    - id: plain
+                      name: './plain.js'
+                """);
+        writeProfile(home().resolve("profiles/test"), "[\"@test/bundle-dis-eval\"]", null);
+        String tpl = "module.exports = { name: '%s', apply(ctx, config) { ctx.emit('applied', '%s') } }";
+        Files.writeString(home().resolve("profiles/test/disabled-true.js"), String.format(tpl, "disabled-true", "disabled-true"));
+        Files.writeString(home().resolve("profiles/test/enabled-false.js"), String.format(tpl, "enabled-false", "enabled-false"));
+        Files.writeString(home().resolve("profiles/test/disabled-broken.js"), String.format(tpl, "disabled-broken", "disabled-broken"));
+        Files.writeString(home().resolve("profiles/test/plain.js"), String.format(tpl, "plain", "plain"));
+
+        List<Entry> entries = new DshProfileReader().load(home().resolve("profiles/test"), installAnchor());
+        // 四行都进 Entry(disabled 标记不在此处剔除)
+        assertThat(entries).extracting(Entry::name)
+                .containsExactly("disabled-true", "enabled-false", "disabled-broken", "plain");
+        assertThat(entries.get(2).disabled().path(DshProfileReader.JS_EXPR_KEY).asText())
+                .isEqualTo("process.platform +");
+
+        Context root = new Context();
+        List<String> applied = new ArrayList<>();
+        root.on("applied", (c, args) -> { applied.add(String.valueOf(args[0])); return null; });
+        try (PluginLoaderService loader = new PluginLoaderService(root)) {
+            List<LoadedPlugin> loaded = loader.loadEntries(entries, home().resolve("profiles/test"));
+            // disabled-true(求值真)→ 排除;enabled-false(求值假)→ 加载;disabled-broken(求值失败)→ 保守排除
+            assertThat(loaded).extracting(lp -> lp.entry().name())
+                    .containsExactly("enabled-false", "plain");
+        } finally {
+            root.fiber.dispose().join();
+        }
+    }
+
     // ---- 真实 dsh bundle(集成,assumption 守卫)----
 
     @Test
@@ -355,9 +410,17 @@ class DshProfileReaderTest {
         // 配置里的 !!js 表达式透传为标记对象 {$dshJs: expr}(M7-5,worker 侧求值)
         assertThat(byId.get("session-persistence-jsonl").config().path("root").path(DshProfileReader.JS_EXPR_KEY).asText())
                 .isEqualTo("dshHomePath('sessions')");
-        // 带 disabled 表达式(!!js)的行被保守跳过
-        assertThat(byId).doesNotContainKey("tool-bash");
-        assertThat(byId).doesNotContainKey("tool-pwsh");
+        // disabled 里的 !!js 表达式不再保守跳过(M7-6):行保留,标记经 Entry.disabled 透传给
+        // loader 在宿主求值(scope = process + dshHomePath)。
+        assertThat(byId).containsKeys("bash-sandbox", "pwsh-sandbox", "tool-bash", "tool-pwsh");
+        assertThat(byId.get("bash-sandbox").disabled().path(DshProfileReader.JS_EXPR_KEY).asText())
+                .isEqualTo("process.platform === 'win32'");
+        assertThat(byId.get("pwsh-sandbox").disabled().path(DshProfileReader.JS_EXPR_KEY).asText())
+                .isEqualTo("process.platform !== 'win32'");
+        assertThat(byId.get("tool-bash").disabled().path(DshProfileReader.JS_EXPR_KEY).asText())
+                .isEqualTo("process.platform === 'win32'");
+        assertThat(byId.get("tool-pwsh").disabled().path(DshProfileReader.JS_EXPR_KEY).asText())
+                .isEqualTo("process.platform !== 'win32'");
         // config 结构透传(base 行 hmr 带 config.root = ['.'])
         assertThat(byId.get("hmr").config().path("root").get(0).asText()).isEqualTo(".");
     }
