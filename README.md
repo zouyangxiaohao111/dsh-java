@@ -112,9 +112,10 @@ cd dsh-java
   add <包>` 在 `$DSH_HOME/profiles/demo/` 写 manifest(`dsh.profile.bundles`)+ 用户
   `cordis.patch.yml` 层 + `node_modules`;然后 `DSH_HOME=<d> ./dshj --profile demo boot` 经
   `DshProfileReader` 组合 bundle patch 层 → PluginLoaderService 经 Node 桥加载,状态页可见
-  新增包。dsh-base 全量核心树(78 行)在 M7-6 后 63/78 注册、44/78 真正 apply(fiber 隔离 +
-  桥值序列化 + disabled `!!js` 使 13 行 C 组解钉),剩余边界行用户层按 dsh patch 机制
-  (id 定向 `disabled`)钉住,见 `docs/m7-4/m7-4-tree-load-map.md`。
+  新增包。dsh-base 全量核心树(78 行)在 M7-7 后 67/78 注册、65/78 真正 apply(M7-7 句柄
+  扩展:迭代器/递归 live 对象/发射器 + cordis-shim getter 修复,解钉 settings + pwsh×2 +
+  tools;`tools` 枢纽解钉级联激活 17 行 PENDING → ACTIVE),剩余边界行用户层按 dsh patch
+  机制(id 定向 `disabled`)钉住,见 `docs/m7-4/m7-4-tree-load-map.md`。
 - `./setup.sh` 一次性初始化,目标是 **clone → setup → run**。`pnpm install` 的 lefthook
   postinstall 失败非阻塞;`build:lib:host` 需 `--config.verify-deps-before-run=false`
   跳过 pnpm 的 install 预检(该预检会被 lefthook postinstall 阻断;tsc/tsdown 本身无碍,
@@ -154,6 +155,7 @@ root.emit("app/ready", "started");       // 触发 JS
 | **M7-4** | 全量 dsh-base 树加载地图(实证"配置即用"边界) | ✅ |
 | **M7-5** | 配置通道修补(schemastery/zod 默认化 + `!!js` 求值)+ 整树零配置复核 | ✅ |
 | **M7-6** | fiber 隔离(兄弟服务可见)+ 桥值序列化(循环/Symbol/fn 句柄/mixin/子路径)+ disabled 通道 `!!js` 求值 + 遗留小项清理;整树复核:63/78 注册、44/78 真正 apply(13 行 C 组解钉) | ✅ |
+| **M7-7** | 通用句柄扩展(迭代器/递归 live 对象/发射器跨桥)+ cordis-shim Service getter 修复;整树复核:67/78 注册、65/78 真正 apply(`tools` 枢纽解钉级联激活 17 行 + settings/pwsh×2 解钉) | ✅ |
 
 ```
 Java 核心(dev.dsh.cordis)      ← 唯一不可替换

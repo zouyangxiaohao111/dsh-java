@@ -106,7 +106,14 @@ public final class Reflect {
 
     /** Re-evaluate every fiber that requires one of the given services (reflect.ts:314-336). */
     public void notify(List<String> names) {
-        for (Plugin.Runtime runtime : this.ctx.registry.values()) {
+        // M7-7 re-experiment fix: snapshot the registry before iterating. Re-entrant
+        // notify (a refreshed fiber's apply may register/remove plugins via ctx.plugin,
+        // e.g. dsh-tools wiring tool plugins) would otherwise throw ConcurrentModificationException
+        // on the fail-fast IdentityHashMap iterator. Real cordis JS Map iteration tolerates
+        // concurrent entry addition (new entries simply aren't visited in this pass); the
+        // Java port must snapshot to match that semantics. This unblocks the `tools` row.
+        List<Plugin.Runtime> runtimes = new ArrayList<>(this.ctx.registry.values());
+        for (Plugin.Runtime runtime : runtimes) {
             for (Fiber fiber : runtime.fibers) {
                 boolean hasUpdate = false;
                 for (String name : names) {
