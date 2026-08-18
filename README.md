@@ -137,6 +137,7 @@ root.emit("app/ready", "started");       // 触发 JS
 | **M5** | PluginLoaderService 配置驱动加载 + 真实 dsh 服务混排 | ✅ |
 | **M6** | 多模块拆分 + 核心发布 + 应用层 `./dshj` + dsh profile 兼容层 | ✅ |
 | **M7-1** | 真实 dsh plugin add 消费闭环(dsh 装、我们跑) | ✅ |
+| **M7-2** | `dshj plugin add` GitHub 源码安装(clone → 编译 → 加载) | ✅ |
 
 ```
 Java 核心(dev.dsh.cordis)      ← 唯一不可替换

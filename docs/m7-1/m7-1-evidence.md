@@ -94,4 +94,4 @@ dshj: node module bases: [D:\code\dsh-java\vendor\dsh\node_modules,
   vendor/dsh CLI 构建产物 + pnpm ≥ 8(PATH 或 `build/pnpm` 本地安装)。
 - fixture:`dsh-host/src/test/resources/m7-1-demo-bundle`(最小真实 dsh bundle 包,声明
   `dsh.bundle.patch`,插件入口 `import { Service } from '@deepseek-ai/cordis'`)。
-- 全量回归:278 测试全绿(0 fail / 0 skip)。
+- 全量回归:278 测试全绿(0 fail / 0 skip);M7-2 追加后为 280(M7 终态)。
