@@ -1,216 +1,123 @@
 # M7-4 — dsh-base 全量核心树加载地图(实证"配置即用"边界)
 
-里程碑:M7-4 + M7-5 复核。日期:2026-08-18。实证记录(非臆测)。
+里程碑:M7-4 + M7-5 + M7-6 复核。日期:2026-08-18。实证记录(非臆测)。
 
-结论:**"核心 = Java cordis + 其他全是 dsh + 配置即用"成立到 51/78 行;M7-5 配置通道修补后,51 行
-全部为「零用户 config」** —— 原 12 行 B 组(需用户层 config 补丁)已全部降为 A 组,补丁删除后整树
-照常 boot 到 HTTP 状态页(证据:`docs/m7-4/m7-4-full-boot.log`,round-m7-5-01)。剩余 22 行需要桥面/
-核心工作,5 行被 base 层 disable(其中 bash-sandbox/tool-bash/skill-badge 正确禁用,pwsh-sandbox/
-tool-pwsh 因 **disabled 通道的 `!!js` 未求值**而保守跳过——M7-5 只覆盖 config 通道,disabled 通道
-是独立 Java 侧判定,未解)。
+结论:**"核心 = Java cordis + 其他全是 dsh + 配置即用"成立到 63/78 行注册、44/78 行真正 apply
+(round-m7-6-final 复核)**。M7-6 三件套(fiber 隔离、桥值序列化、disabled 通道 `!!js` 求值)让 13 行
+C 组不再需要钉住(12 行真正 apply,`tool-subagent-list-agents` 注册成功但因依赖 `tools` 被钉而滞留
+PENDING)。整树照常 boot 到 HTTP 状态页(证据:`docs/m7-4/m7-4-full-boot.log`,round-m7-6-final)。
+
+> **诚实修正(M7-6 复核)**:M7-5 的 "51 行 A" 是把「loader 注册成功」误当成「apply 成功」。boot
+> 日志列出的是**全部注册行**(`LoaderService.loaded()`),不区分 fiber 是否真正 apply。本次用 fiber
+> 状态审计(每行注册后查 `FiberState`)重测 M7-5 钉集(当前代码 + M7-5 22 钉):**28 ACTIVE +
+> 23 PENDING**(PENDING = 注册了但 inject 依赖不满足 → apply 从未运行)。M7-6 复核后 **44 ACTIVE
+> + 19 PENDING**。这两组里 PENDING 的根因一致:**该行的 inject 依赖(多为 `tools`)被钉住** →
+> fiber 保持 PENDING、apply 不跑,但不阻塞 boot(不 FAILED)。这不是 M7-6 引入的回归,而是
+> M7-4/M7-5 测量口径的偏差(把「注册」当「加载」);M7-6 复核把口径修正为 apply 是否真正运行。
 
 ## 1. 实验设置(与 M7-1 同形,反向:全量不 disable)
 
 - **profile**:`build/m7-4/home/profiles/full`(DSH_HOME=`build/m7-4/home`),`package.json`
   声明 `dsh.profile.bundles = ["@deepseek-ai/dsh-base"]`;**用户层初始 `[]`,逐步按失败钉行**。
 - **M7-5 复核**:应用配置通道修补(3288b6a)后重跑同一 profile,**删除 12 行 B 组的用户层 config
-  补丁**(回到零配置),只保留 22 行 C 组 `disabled: true` 钉行。结果:51 行一次 boot 成功
-  (round-m7-5-01),B 组 12 行全部零配置加载 —— 补丁确实不再需要。
+  补丁**(回到零配置),只保留 22 行 C 组 `disabled: true` 钉行。结果:51 行注册、无 FAILED。
+- **M7-6 复核(本次)**:应用 fiber 隔离(bd206d6)+ 桥值序列化(800869e)+ disabled 通道 `!!js`
+  求值(5205c4c)后,把 M7-6 已解的行从用户层钉中移除,只保留真正未解的行。结果:
+  - **63 行注册**、44 行真正 apply(ACTIVE)、19 行 PENDING(注册但依赖未满足)。
+  - 13 行 C 组不再需要钉(fiber 2 行 + 桥 11 行),其中 12 行 ACTIVE、`tool-subagent-list-agents`
+    注册成功但滞留 PENDING(其 inject `tools`/`subagents` 被钉)。
+  - **新增 3 行钉**:`goal-round-driver`(M7-5 时因 `goals` 不可用而休眠,现 `goal` 加载后激活并在
+    apply 里调跨 worker 的 `ctx.agents.list()` → 失败)、`pwsh-sandbox`/`tool-pwsh`(disabled 通道
+    求值后启用,但 apply 触发 cordis-shim getter bug)。
 - **workspace 链接**:`vendor/dsh/node_modules/@deepseek-ai/dsh-base` 链接已在(M7-1 恢复);
   profile 自身 `node_modules/@deepseek-ai/*` 为 76 个 workspace 包目录的 junction(镜像真实
   `pnpm add @deepseek-ai/dsh-base` + install 的扁平 node_modules 布局)。
 - **boot**:`DSH_HOME=<home> ./dshj --profile full boot`。加载器语义 = 任一条目失败 → 整批回滚;
-  每轮只暴露**第一个**失败行 → 钉掉 → 重跑。37 轮后稳定(见 §6 轮次日志)。
-- **边界断言**:round-m7-5-01 `./dshj --profile full boot` 完整 boot,51 行列出 + `profile 'full' is
+  每轮只暴露**第一个**失败行 → 钉掉 → 重跑。M7-4 37 轮稳定;M7-5 复核 1 轮;M7-6 复核 4 轮
+  (goal 触发 goal-round-driver 激活回归 + pwsh 启用后 shim bug 两处)。
+- **边界断言**:round-m7-6-final `./dshj --profile full boot` 完整 boot,63 行列出 + `profile 'full' is
   running on the Java harness` + `web status page at http://127.0.0.1:8080/`(120s 内未退出 =
-  整树加载成功)。证据日志:`docs/m7-4/m7-4-full-boot.log`(round-m7-5-01 原样,替换原 round-37)。
+  整树加载成功)。证据日志:`docs/m7-4/m7-4-full-boot.log`(round-m7-6-final 原样,替换 round-m7-5-01)。
 - 用户层 `cordis.patch.yml`(每行注释记录原因):`build/m7-4/home/profiles/full/cordis.patch.yml`
-  (build/,gitignored)。**M7-5 复核后只剩 22 行 C 组钉行;12 行 B 组条目已删除(零配置)。**
+  (build/,gitignored)。**M7-6 复核后 12 行钉:9 行原 C 组未解 + `goal-round-driver` + 2 行 pwsh。**
 
-## 2. 最终统计(78 行)
+## 2. 最终统计(78 行;M7-6 复核口径)
 
 | 分组 | 行数 | 说明 |
 |---|---|---|
-| A 真能加载(零 config,含原 12 行 B 组) | **51** | 只需 profile + workspace 链接;M7-5 后 51 行全零配置 |
-| B 配置+可解(用户层 config 补丁) | **0** | M7-5 配置通道修补后不再需要(M7-4 为 12) |
-| C 要桥面/核心工作 | **22** | 钉掉;见 §4 分类 |
-| D base 层 disabled(平台/表达式) | **5** | 见 §5(3 正确禁用 + 2 保守跳过) |
+| A 注册且真正 apply(ACTIVE,零 config) | **44** | fiber 状态审计确认 apply 已运行 |
+| P 注册但 PENDING(依赖未满足,apply 未跑) | **19** | 见 §2.1;M7-5 的 "51 A" 里就有 23 行如此 |
+| C 用户层钉住(未解) | **10** | typert/typert-gateway(客户端)、hmr、settings/permission(shim getter)、session-persistence-jsonl/plan-mode/tools/agent-loop(跨 worker 方法调用)、goal-round-driver(新增) |
+| D base 层 disabled | **5** | 3 正确禁用(bash-sandbox/tool-bash/skill-badge)+ 2 已钉住(pwsh-sandbox/tool-pwsh,启用后 shim bug) |
 
-**78 行里:51 零配置即用 / 22 要桥面或核心工作 / 5 base 禁用(含 2 保守跳过)。**
+**78 行里:44 真正 apply / 19 注册待依赖 / 10 用户钉 / 5 base 禁用。**
 
-> **为什么是 51 不是 63?** M7-4 的 §7 曾按"12 行 B 组降为 A 组 → 51 → 63"预估。复核显示:12 行 B 组
-> 本就包含在 51 里(39 A + 12 B),配置通道修补让它们从「带补丁」变「零配置」,**行数不变**;
-> D 组的 pwsh-sandbox/tool-pwsh 属 **disabled 通道**(独立于 config 通道),Java 侧仍保守跳过,
-> 也不在本次修补范围。故实测边界 = 51 零配置,而非 63。把 disabled 通道也接到 worker 求值可 +2 → 53。
-
-## 3. A:51 行加载成功,全部零配置(证据:round-m7-5-01 日志)
-
-> M7-4 曾把 12 行归为 B 组(需用户层 config 补丁):把 schemastery 的 `static Config` 默认值显式写进
-> 用户层(loader 不跑 schemastery 校验,config=null 直传 → 插件构造读 `config.x` 崩),或把 base 层
-> 的 `!!js` 表达式求值成字面量。**根因是 loader 的 config 通道与真实 cordis 的 schemastery 默认化
-> 不同**,不是插件本身不能用。
+> **为什么 44 不是 63?** 63 是「注册无失败」;fiber 状态审计显示其中 19 行 PENDING(注册了但
+> inject 依赖不满足 → apply 从未运行)。PENDING 不 FAILED,所以 boot 日志照样列出、boot 不失败,
+> 但插件的 apply 体没有执行 —— 不算"加载"。真实边界 = **44 行 apply**。
 >
-> **M7-5 修补(3288b6a)**:worker 侧 apply 前先求值 config 里的 `!!js` 标记对象(`{$dshJs: expr}`,scope =
-> `process` + `dshHomePath`),再按插件 `static Config` 默认化 —— schemastery(可调用函数)直接
-> `Config(raw ?? {})`,zod 走 `.parse(raw ?? {})`;失败一律回退原 config 不挂加载。**这 12 行补丁
-> 全部删除后,51 行一次 boot 成功**,证明配置通道已镜像真实 cordis。下表把原 B 行标注为 A(零配置)。
+> **M7-5 的 "51 A" 是什么?** M7-5 用 boot 日志(列出全部注册行)判定 "51 行加载"。本次审计显示
+> 那是 **28 ACTIVE + 23 PENDING**。PENDING 行在 M7-5 一样存在(它们的 inject 依赖 `tools`/
+> `commands`/`goals` 等当时就被钉),只是 M7-4/M7-5 没按 fiber 状态区分。修正口径后 M7-5 真加载
+> = 28,不是 51。
 
-| 行 | 插件 | 状态 |
-|---|---|---|
-| llm | @deepseek-ai/dsh-llm | A |
-| session | @deepseek-ai/dsh-session | A |
-| typert-loader | @deepseek-ai/dsh-typert-loader | A |
-| session-title-llm | @deepseek-ai/dsh-session-title-first-prompt-llm | A |
-| user-questions | @deepseek-ai/dsh-user-questions | A |
-| agent | @deepseek-ai/dsh-agent | A |
-| agent-default-model | @deepseek-ai/dsh-agent-default-model | A |
-| jobs | @deepseek-ai/dsh-jobs-local | A(零配置;schemastery 默认 `maxConcurrentJobsPerOwner: 10`) |
-| llm-retry | @deepseek-ai/dsh-llm-retry | A(零配置;zod `z.object({})` parse) |
-| credentials | @deepseek-ai/dsh-credentials-local | A(零配置;`resolveSpec` → `$DSH_HOME/.credentials.yaml`) |
-| attachment-local | @deepseek-ai/dsh-attachment-local | A(零配置;`resolveDshHome` → `<home>/attachments/v1`) |
-| session-projection | @deepseek-ai/dsh-session-projection | A |
-| session-telemetry-otel | @deepseek-ai/dsh-session-telemetry-otel | A(零配置;base `!!js` 由桥求值 → `mode: DISABLED` + exporter url) |
-| subprocess | @deepseek-ai/dsh-subprocess-local | A |
-| sandbox | @deepseek-ai/dsh-sandbox-local | A(零配置;schemastery 默认 `runnerCommand/runnerFailureSignatures/probeTimeoutMs`) |
-| sandbox-policy | @deepseek-ai/dsh-sandbox-policy | A |
-| approval | @deepseek-ai/dsh-user-approval | A |
-| shell-env | @deepseek-ai/dsh-shell-env | A(零配置;`resolveDshHome` → `<home>`) |
-| tool-jobs | @deepseek-ai/dsh-tool-jobs | A |
-| fs-observation-policy | @deepseek-ai/dsh-fs-observation-policy | A |
-| tool-fs | @deepseek-ai/dsh-tool-fs | A |
-| tool-fs-search | @deepseek-ai/dsh-tool-fs-search | A |
-| agent-instructions | @deepseek-ai/dsh-agent-instructions | A |
-| skill | @deepseek-ai/dsh-skill | A(零配置;`collectCacheMaxEntries ??` 默认) |
-| tool-skill | @deepseek-ai/dsh-tool-skill | A |
-| command-feedback | @deepseek-ai/dsh-command-feedback | A |
-| goal-round-driver | @deepseek-ai/dsh-goal-round-driver | A |
-| command-goal | @deepseek-ai/dsh-command-goal | A |
-| token-meter | @deepseek-ai/dsh-token-meter | A(零配置;zod `z.object({})` parse) |
-| compaction-basic | @deepseek-ai/dsh-compaction-basic | A(零配置;`resolveConfig` 填默认) |
-| command-compact | @deepseek-ai/dsh-command-compact | A |
-| subagent | @deepseek-ai/dsh-subagent | A |
-| tool-subagent-control | @deepseek-ai/dsh-tool-subagent-control | A |
-| tool-subagent | @deepseek-ai/dsh-tool-subagent | A |
-| tool-subagent-fork | @deepseek-ai/dsh-tool-subagent | A |
-| tool-subagent-report | @deepseek-ai/dsh-tool-subagent-report | A |
-| workflow-worker-thread | @deepseek-ai/dsh-workflow-worker-thread | A |
-| tool-workflow | @deepseek-ai/dsh-tool-workflow | A |
-| timeout-policy | @deepseek-ai/dsh-tool-call-timeout-policy | A |
-| spill-local | @deepseek-ai/dsh-spill-local | A(零配置;`root` undefined → OS-temp private root) |
-| spill-policy | @deepseek-ai/dsh-spill-policy | A |
-| session-checkpoint-policy | @deepseek-ai/dsh-session-checkpoint-policy | A |
-| tool-result-pruner | @deepseek-ai/dsh-compaction-tool-result-pruner | A |
-| tool-todo | @deepseek-ai/dsh-tool-todo | A |
-| tool-goal | @deepseek-ai/dsh-tool-goal | A |
-| tool-ralph | @deepseek-ai/dsh-tool-ralph | A |
-| tool-str-replace-editor | @deepseek-ai/dsh-tool-str-replace-editor | A |
-| repeat-tool-reminder | @deepseek-ai/dsh-repeat-tool-reminder | A(零配置;schemastery 默认 `include/exclude: []`) |
-| web | @deepseek-ai/dsh-web | A |
-| tool-web | @deepseek-ai/dsh-tool-web | A |
-| system-prompt | @deepseek-ai/dsh-system-prompt | A |
+### 2.1 PENDING 19 行(注册成功,apply 未跑)
 
-**M7-5 落地**:loader 的 config 通道已镜像真实 cordis —— worker 侧在 apply 前求值 config 里的
-`!!js`(scope = `process` + `dshHomePath`)并跑插件 `static Config` 默认化(schemastery 可调用 /
-zod `.parse`)。**12 行 B 组已降为 A 组,51 行全部是「零 config」**,不再是 M7-4 的"纯配置可达"。
+| 行 | 未满足的 inject 依赖 |
+|---|---|
+| typert-loader | `typert`(钉)、`loader`(核心未提供) |
+| tool-jobs / tool-fs / tool-fs-search / tool-skill / tool-subagent / tool-subagent-control / tool-subagent-fork / tool-subagent-report / tool-subagent-list-agents / tool-todo / tool-web / tool-goal / tool-ralph / tool-workflow / timeout-policy / spill-policy / session-checkpoint-policy | `tools`(钉;其中 tool-fs 还缺 `fs`、tool-jobs 还缺 `jobs`、session-checkpoint-policy 还缺 `sessionPersistence`) |
 
-## 4. C:22 行失败,按原因分类(每行 = 一行原因 + 缺什么)
+根因:这些行的 `static inject`/`const inject` 声明了 `tools` 等依赖,而 `tools` 行仍在 C 组钉住 → fiber
+保持 PENDING,apply 不运行。**解 `tools` 行后这些行会批量进入 ACTIVE**(下一阶段工作)。
+
+## 3. A:44 行注册且真正 apply(证据:round-m7-6-final fiber 状态)
+
+> M7-4 曾把 12 行归为 B 组(需用户层 config 补丁);M7-5 配置通道修补让它们零配置。
+> M7-6 复核用 fiber 状态确认:下面 44 行 apply 真正运行了。
+
+- 28 行 M7-5 基线 ACTIVE 全部保留:agent, agent-default-model, agent-instructions, approval,
+  attachment-local, compaction-basic, credentials, fs-observation-policy, jobs, llm, llm-retry,
+  repeat-tool-reminder, sandbox, sandbox-policy, session, session-projection, session-telemetry-otel,
+  shell-env, skill, spill-local, subagent, subprocess, system-prompt, token-meter, tool-result-pruner,
+  user-questions, web, workflow-worker-thread(见证据日志完整列表)。
+- **M7-6 新增 16 行 ACTIVE**(相对 M7-5 基线):
+  - 12 行 M7-6 解的 C 组:fs-sandbox, llm-deepseek, timer, session-title, session-query-sqlite,
+    llm-pi-ai, commands, goal, skill-filesystem, subagent-spawn-in-process, subagent-fork-in-process,
+    web-search-deepseek。
+  - 4 行原本 PENDING、因依赖行解钉而激活:command-compact, command-feedback, command-goal(依赖
+    `commands` 现在加载)、session-title-llm(依赖 `sessionTitle` 现在加载)。
+
+完整 ACTIVE 列表见 `docs/m7-4/m7-4-full-boot.log`(round-m7-6-final;44 行全列出)。
+
+## 4. C:用户层钉住的 10 行(M7-6 复核后),按原因分类
 
 | 失败行 | 原因类别 | 具体原因 / 缺什么 |
 |---|---|---|
-| typert | 客户端专属 | `dsh.client.platform: web, immediately: true`;**无 host lib 构建**(lib/ 仅 types/),loader 把所有行当 Node 插件、不跳过 client-only 行 |
-| typert-gateway | 客户端专属 | 同上(@deepseek-ai/dsh-api-gateway,web 平台) |
-| tool-subagent-list-agents | 桥形状 | 模块说明符是 **export-map 子路径** `.../list-agents`;`HostSelector.resolveFromNodeModules` 只解析包根,不解析 exports 子路径 → path not found |
-| timer | 桥形状 | `ctx.mixin()` 是 cordis 框架方法,**Java 桥 ctx shim 未暴露**(Proxy 把 `ctx.mixin` 当服务 get → `Context.get('mixin')` 抛 "without inject") |
-| hmr | 缺 ctx 服务 | 缺 **`ctx.loader`**(cordis 热重载 loader 服务),Java 核心未提供 |
-| session-title | 桥形状 | Service 实例含 `this.ctx` 回环,**node-bridge serializeValue 拒绝循环** → "cannot serialize cyclic value" |
-| session-query-sqlite | 桥形状 | 实例含 own 可枚举 `_persistenceBinding = { identity: Symbol() }`;serializeValue **拒绝 Symbol** |
-| llm-pi-ai | 桥形状 | config 空为正确 dormant 态,但注册 PiAiAdapter 时 **fn handle 失效** → "unknown fn handle" |
-| session-persistence-jsonl | **核心: fiber 隔离** | 读 `ctx.sessions`(dsh-session 已提供)仍 "without inject";**PluginLoaderService 每插件一个独立子 fiber,兄弟 fiber 服务不可见** |
-| settings | 桥形状(shim bug) | cordis-shim Service 构造用 `typeof self[key]` 绑定原型成员,**求值了 getter**;`documentPath` getter 在子类 `this.spec` 赋值前被读 → 崩 |
-| permission | 桥形状(shim bug)+核心 | 同上 getter bug(`get names`);且 `static inject = ['shell','approval','sessions']` |
-| commands | 桥形状 | Service 实例循环 → serializeValue 拒绝 |
-| goal | 桥形状 | config 补丁过了 null,但 GoalService 实例循环 → serializeValue 拒绝 |
-| plan-mode | 核心: fiber 隔离 | 读 `ctx.systemPrompt`(system-prompt 是**更靠后**的行,即便无隔离也按顺序不可见) |
-| skill-filesystem | 桥形状 | fn handle 失效 → "unknown fn handle" |
-| subagent-spawn-in-process | 桥形状 | fn handle 失效 |
-| subagent-fork-in-process | 桥形状 | fn handle 失效 |
-| web-search-deepseek | 桥形状 | fn handle 失效 |
-| tools | 核心: fiber 隔离 | config.mode 可补(null),但构造读 `ctx.systemPrompt.tools(...)`(system-prompt 更靠后) |
-| agent-loop | 核心: fiber 隔离 | 读 `ctx.configuredAgentIdentities` |
-| fs-sandbox | 核心: fiber 隔离 | config.diffBasisMaxBytes 可补,null,但构造读 `ctx.sandboxPolicy.defaultMode`(sibling fiber) |
-| llm-deepseek | 核心: fiber 隔离 | 读 `ctx.launchEnvironment` |
+| typert / typert-gateway | 客户端专属(非桥) | `dsh.client.platform: web, immediately: true`,lib/ 仅有 types/ 无 host 运行时构建;loader 不跳过 client-only 行。M7-6 确认非桥问题,设计如此,需 loader 建模跳过 |
+| hmr | 缺 ctx 服务 | 缺 `ctx.loader`(cordis 热重载 loader 服务),Java 核心未提供 |
+| settings / permission | 核心:shim getter bug | cordis-shim Service 构造用 `typeof self[key]` 求值 getter,子类构造前读 `this.spec`/`this.presets` 崩。M7-6 未修(核心:cordis-shim 类别,另行处理) |
+| session-persistence-jsonl / plan-mode / tools / agent-loop | 核心:跨 worker 服务方法 | fiber 隔离后兄弟服务可见(不再 "without inject"),但 apply 内**调用**兄弟服务方法(`ctx.sessions.list` / `ctx.systemPrompt.section` / `ctx.systemPrompt.tools` / `ctx.agents.setFactory`)→ 每插件独立 worker 的 fn 句柄跨 worker 降级为 no-op stub。需"服务句柄化"(跨 worker 服务方法调用),独立桥面工作项 |
+| goal-round-driver | **新增(M7-6 复核发现)** | M7-5 时因 `goals` 不可用(goal 钉住)而休眠 PENDING,被误记为 "A";M7-6 让 `goal` 加载后该行激活,apply 调跨 worker `ctx.agents.list()` → 失败。与上面 4 行同类(跨 worker 服务方法) |
 
-**类别汇总**:
-- **缺 ctx 服务 / fiber 隔离(核心工作)**:6 行 —— session-persistence-jsonl、plan-mode、tools、
-  agent-loop、fs-sandbox、llm-deepseek。根因:**每插件独立子 fiber,服务不跨兄弟可见**;真实 dsh
-  按"服务可用性驱动"激活(cordis patch 注释原话),loader 按严格顺序 + 逐插件 fiber 实现。
-- **桥形状(跨桥值/句柄)**:13 行 —— typert、typert-gateway(client-only 无 host lib)、
+## 5. D:5 行 base 层 disabled(M7-6 复核:disabled 通道已接 worker 求值)
 
-> **M7-6 复核(fiber 隔离修复,commit "feat: M7-6 - fiber isolation")**:核心层 `Context.get`
-> 加"共享 store 按 isolate label"回退 + 桥面 `getService`(cordis `ctx.get` 语义:同 scope 兄弟可见、
-> 缺服务读 JS `undefined` 不抛 "without inject")+ node-bridge `pluginMeta` 读类插件 `static inject`
-> (服务可用性驱动激活的前置)。实证(round-m7-6-fiber-boot):**fs-sandbox、llm-deepseek 已能加载**
-> (整树 boot 成功,51 → 53 行;前者只做兄弟服务**属性读** `ctx.sandboxPolicy.defaultMode`,后者读
-> launcher 槽 `ctx.get('launchEnvironment')` 落空后走 `?? fallback`)。其余 4 行(session-persistence-
-> jsonl / plan-mode / tools / agent-loop)**不再报 "without inject"**(兄弟服务已可见),但 apply 内要
-> **调用**兄弟服务的方法(`ctx.sessions.list` / `ctx.systemPrompt.section` 等),而每插件独立 worker 的
-> fn 句柄跨 worker 只能降级为 no-op stub —— 需"服务句柄化"(跨 worker 服务方法调用)这一独立桥面
-> 工作项,不在本次 fiber 隔离范围内。
-  tool-subagent-list-agents(exports 子路径)、timer(ctx.mixin 未暴露)、session-title/commands/goal
-  (循环)、session-query-sqlite(Symbol)、llm-pi-ai/skill-filesystem/subagent-{spawn,fork}-
-  in-process/web-search-deepseek(fn handle 失效)、settings/permission(shim getter 求值 bug)。
-- **核心: cordis-shim 与真实 cordis 语义差异**):settings、permission 的 getter 求值 bug 属这一类。
-
-> **M7-6 复核(桥值序列化,commit feat: M7-6 - bridge value serialization)**:
-> 13 行"桥形状"里,**11 行已由 node-bridge.js 值序列化 + 解析器修复落地,1 类确认非桥问题**;
-> settings/permission(shim getter bug)不属本里程碑(核心:cordis-shim 类别,另行处理)。
-> - **循环 this.ctx / 自引用链**(session-title、commands、goal):serializeValue 遇已见对象降级为
->   `{$kind:'cycle'}` 标记,不再 "cannot serialize cyclic value"。
-> - **Symbol 实例字段**(session-query-sqlite):serializeValue 把 Symbol 值降级为 `{$kind:'symbol'}`
->   标记,不再 "cannot serialize value across bridge: symbol"。
-> - **失效 fn 句柄**(llm-pi-ai、skill-filesystem、subagent-spawn/fork-in-process、web-search-deepseek):
->   deserializeValue 遇未注册 fn 句柄(已 release / **跨 worker**——每插件独立 Node worker,兄弟
->   插件读到的服务值含对方 worker 的 fn 句柄)降级为记录性 no-op stub,不再 "unknown fn handle"。
->   注:跨 worker 服务方法的**真实调用语义**仍不成立(stub 为 no-op),深层修复属"共享插件 fiber /
->   服务句柄化"工作(§7 第 1 项)。
-> - **ctx.mixin 缺失**(timer):ctx shim 补 `mixin`(非可枚举,镜像 Java Context.mixin),Java
->   NodeWorkerBridge 补 mixin 分发(List/Map 两形),不再 "cannot get property mixin without inject"。
-> - **export-map 子路径**(tool-subagent-list-agents):HostSelector.resolveFromNodeModules 拆分
->   `pkg/subpath` → 经包 package.json `exports` 解析到实际文件(条件导出取 default/node/import/require),
->   不再 "path not found"。
-> - **typert / typert-gateway(client-only)**:复核确认 `@deepseek-ai/dsh-typert-registry` 的
->   `dsh.client.platform: web, immediately: true` 且 **lib/ 仅有 types/、无 host 运行时构建**
->   (`lib/index.js`/`lib/client.js` 不存在,exports/files 声明的运行时入口未生成)—— 真无 host lib,
->   **记录为设计如此,不需修**,从"桥形状"标记为**非桥问题**(应建模为 loader 跳过 client-only 行)。
-
-## 5. D:5 行 base 层 disabled(M7-5 复核:仅 config 通道的 `!!js` 被求值,disabled 通道未解)
-
-> **M7-5 复核结论**:配置通道修补只求值 **config 值**里的 `!!js`(worker 侧 apply 前);`disabled`
-> 字段是 **Java 侧独立判定**(`DshProfileReader.isDisabled`),对 `!!js` 标记对象(`{$dshJs: ...}`)
-> 一律保守返回「已禁用」—— `DshProfileReaderTest` 显式断言「带 disabled 表达式(!!js)的行被保守
-> 跳过」。因此 **pwsh-sandbox / tool-pwsh 在 Windows 上仍不加载**(round-m7-5-01 日志无此二行),
-> 与修补前一致。「!!js 相关的 D 组在 Windows 上应能求值并加载」的预期**未达成**:这是 disabled
-> 通道,不是 config 通道 —— 修补范围之外。
->
-> **M7-6 落地**:disabled 通道已接到 worker 求值(3288b6a 之后,独立提交)。`DshProfileReader`
-> 对 `{$dshJs: expr}` disabled 标记不再保守剔除 —— 行保留,标记经 `Entry.disabled()` 透传给
-> loader,loader 在加载前让宿主求值(scope = process + dshHomePath,与 config 通道同函数
-> `evalJsExpression`);求值 truthy → 插件不加载,求值失败 → 保守按禁用处理。**pwsh-sandbox /
-> tool-pwsh 在 Windows 上不再被保守跳过**(`process.platform !== 'win32'` 求值为 false → 加载),
-> D 组 +2 行进入"可加载"面;bash-sandbox / tool-bash 由求值正确禁用(与保守跳过同结果)。
-> 注:强制启用后 pwsh 是否还有桥/服务注入问题未在本次实验复核(超出 disabled 通道范围)。
-
-| 行 | base 表达式 | Windows 实际 | Java 处理 | 备注 |
+| 行 | base 表达式 | Windows 实际 | 处理 | 备注 |
 |---|---|---|---|---|
-| bash-sandbox | `!!js process.platform === 'win32'` | 应禁用 | 标记对象→跳过 | ✅ 正确(win32 本就该禁用) |
-| tool-bash | 同上 | 应禁用 | 跳过 | ✅ 正确 |
+| bash-sandbox | `!!js process.platform === 'win32'` | 应禁用 | worker 求值 → true → 禁用 | ✅ 正确 |
+| tool-bash | 同上 | 应禁用 | 同上 | ✅ 正确 |
 | skill-badge | `disabled: true` | 禁用 | 布尔真→跳过 | ✅ 正确 |
-| pwsh-sandbox | `!!js process.platform !== 'win32'` | **应启用** | 标记对象→跳过 | ⚠️ **仍保守跳过**:disabled 通道的 `!!js` Java 侧不求值(行被 compose 排除,进不到 worker)。解=把 disabled 判定也接到 worker 求值;未测强制启用后是否还有桥/服务注入问题 |
-| tool-pwsh | 同上 | **应启用** | 跳过 | ⚠️ 同上 |
+| pwsh-sandbox | `!!js process.platform !== 'win32'` | **启用** | worker 求值 → false → 加载 → apply 失败(shim getter bug) | ⚠️ 钉住(新) |
+| tool-pwsh | 同上 | **启用** | 同上 | ⚠️ 钉住(新) |
 
-## 6. 迭代轮次日志(M7-4:40 轮上限,37 轮完成;M7-5 复核:1 轮)
+M7-6 的 disabled 通道修复让 pwsh 两行**不再保守跳过**(`process.platform !== 'win32'` 在 Windows
+求值为 false → 行保留、尝试加载),但 apply 触发 cordis-shim getter bug(`get config()` 读
+`this.source()` 早于赋值)→ 需要钉住。这是"强制启用后还有桥/服务注入问题"的实证,M7-6 §5 当时的
+注记被本次复核确认。
 
-`build/m7-4/round-01.log … round-37.log`(gitignored)。每轮 = 第一个失败行 → 钉/补 → 重跑:
+## 6. 迭代轮次日志(M7-4:40 轮上限,37 轮完成;M7-5 复核:1 轮;M7-6 复核:4 轮)
+
+`build/m7-4/round-01.log … round-37.log`、`round-m7-5-01.log`、`round-m7-6-*.log`(gitignored):
 
 ```
 01 typert         客户端专属无 host lib           → 钉
@@ -249,41 +156,40 @@ zod `.parse`)。**12 行 B 组已降为 A 组,51 行全部是「零 config」**,
 34 fs-sandbox     缺 ctx.sandboxPolicy           → 钉
 35 llm-deepseek   缺 ctx.launchEnvironment       → 钉
 36 llm-deepseek   缺 ctx.launchEnvironment       → 钉
-37 稳定:51 行 boot 成功(HTTP 状态页)            ✅
-m7-5-01 应用配置通道修补 + 删除 12 行 B 组补丁   → 51 行零配置一次成功 ✅
+37 稳定:51 行注册(HTTP 状态页)                  ✅
+m7-5-01 应用配置通道修补 + 删除 12 行 B 组补丁   → 51 行注册零配置一次成功 ✅
+m7-6-01 移除 M7-6 已解行的钉 → 首个失败:goal-round-driver
+        (goal 加载后激活,apply 调 ctx.agents.list 跨 worker 失败) → 钉 goal-round-driver
+m7-6-02 pwsh-sandbox 启用后 shim getter bug      → 钉 pwsh-sandbox
+m7-6-03 tool-pwsh 同                            → 钉 tool-pwsh
+m7-6-final 63 行注册,44 ACTIVE + 19 PENDING,boot 稳定 ✅
 ```
 
-> `round-m7-5-01.log`:DSH_HOME=`build/m7-4/home`,`./dshj --profile full boot`,120s 内未退出 =
-> 整树加载成功(evidence 已替换进 `docs/m7-4/m7-4-full-boot.log`)。删除补丁的行:jobs / llm-retry /
-> credentials / attachment-local / session-telemetry-otel / sandbox / shell-env / skill / token-meter /
-> compaction-basic / spill-local / repeat-tool-reminder。
+> `round-m7-6-final.log`:DSH_HOME=`build/m7-4/home`,`./dshj --profile full boot`,120s 内未退出 =
+> 整树加载成功(evidence 已替换进 `docs/m7-4/m7-4-full-boot.log`)。fiber 状态审计另见
+> `build/m7-4/round-m7-6-fiberstate.log`(44 ACTIVE / 19 PENDING)。
 
-## 7. 结论与建议(M7-5 复核后)
+## 7. 结论与建议(M7-6 复核后)
 
-- **"核心 = Java cordis + 其他全是 dsh + 配置即用"实证成立到 51/78,且 51 行全部零配置**。
-  配置通道已镜像真实 cordis(schemastery/zod 默认化 + `!!js` 求值),12 行 B 组补丁删除后一次 boot
-  成功 —— **config 通道的缺口已关闭**(M7-4 §7 预估的"51 → 63"未达,因为 12 行 B 组本就计入 51,
-  见 §2 说明)。
-- **剩余 22 行 C 组里,没有一个**是"版本标签"或"原生 OS"问题 —— **全部是桥面/核心工作**
-  (跨桥值序列化、fn handle 生命周期、ctx 框架方法未暴露、exports 子路径解析、client-only 行建模、
-  fiber 隔离)。**5 行 D 组**:3 行正确禁用;2 行(pwsh-sandbox/tool-pwsh)是 **disabled 通道的 `!!js`
-  未求值**导致的保守跳过(独立于 config 通道)。
-- **最高杠杆的 Java 侧工作**(按行数):
-  1. **共享插件 fiber / 服务可用性驱动激活**(6 行):session-persistence-jsonl、plan-mode、tools、
-     agent-loop、fs-sandbox、llm-deepseek。镜像真实 dsh 的 activation 语义是解锁最大块的核心工作。
-  2. **node-bridge 值序列化 + fn handle 生命周期加固**(13 行):循环/Symbol 容忍、服务 provide 改
-     句柄、client-only 行跳过、exports 子路径解析、ctx.mixin 等框架方法暴露。
-  3. **cordis-shim Service 构造**(2 行):settings、permission —— 原型绑定循环用
-     `getOwnPropertyDescriptor` 跳过 getter。
-  4. **disabled 通道的 `!!js` 求值**(2 行):pwsh-sandbox、tool-pwsh —— 把 `disabled` 判定也接到
-     worker 侧求值(与 config 通道同 mechanism),可再 +2。
-- **已闭合**:config 通道(schema 默认化 + config `!!js` 求值)→ 12 行降为 A 组。
+- **"核心 = Java cordis + 其他全是 dsh + 配置即用"实证成立到 63/78 注册、44/78 apply**。
+  配置通道(M7-5)、fiber 隔离 + 桥序列化 + disabled 通道(M7-6)三处缺口都已关闭。
+- **M7-6 让 13 行 C 组解钉**(12 行真正 apply + `tool-subagent-list-agents` 注册成功但依赖 `tools`
+  被钉而 PENDING),并让 4 行原本 PENDING 的行因依赖解钉而激活 → ACTIVE 28 → 44(+16)。
+- **剩余 10 行 C 组钉**分类:
+  1. **跨 worker 服务方法调用**(5 行):session-persistence-jsonl、plan-mode、tools、agent-loop、
+     goal-round-driver。fiber 隔离让服务可见,但"调用兄弟服务方法"仍缺服务句柄化 —— 最高杠杆。
+  2. **cordis-shim getter bug**(2 行):settings、permission(连同 pwsh 两行共 4 行同因)。
+  3. **客户端专属**(2 行):typert、typert-gateway(设计如此,loader 建模跳过 client-only 行)。
+  4. **缺 ctx.loader**(1 行):hmr。
+- **PENDING 19 行**:几乎全因 `tools` 被钉而滞留。解 `tools` 行(跨 worker 服务方法)后这 19 行会
+  批量进入 ACTIVE —— 与 C 组第 1 类是同一把钥匙。
+- **测量口径修正**:boot 日志列出的是注册行,不是 apply 行。今后判定"行是否加载"应以 fiber
+  状态(ACTIVE)为准,M7-5 的 "51 A" 是 28 ACTIVE + 23 PENDING。
 
 ## 8. 提交回归锁
 
 - 实验产物(profile、round 日志、脚本)在 `build/m7-4/`(gitignored),不入库。
-- 入库:`docs/m7-4/m7-4-tree-load-map.md` + `docs/m7-4/m7-4-full-boot.log`(round-m7-5-01 证据,
-  替换原 round-37)。
-- 配置通道修补(M7-5)已单独提交(3288b6a,含 ConfigChannelTest ×5 + DshProfileReaderTest 更新);
-  全量回归 285 测试全绿。
-- 本次复核未改任何核心代码/loader 语义;只更新 docs + 实验产物。
+- 入库:`docs/m7-4/m7-4-tree-load-map.md` + `docs/m7-4/m7-4-full-boot.log`(round-m7-6-final 证据,
+  替换 round-m7-5-01)。
+- 本次复核未改任何核心代码/loader 语义(仅临时加过 fiber 状态审计日志,已还原);只更新 docs +
+  实验产物。M7-6 核心修复(fiber 隔离 / 桥序列化 / disabled 通道)已在先前提交落地。

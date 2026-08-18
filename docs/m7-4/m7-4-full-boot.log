@@ -1,7 +1,404 @@
+node-bridge: stale fn handle 3 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 4 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 5 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 6 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 7 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 8 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 9 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 10 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 11 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 12 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 13 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 14 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 15 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 16 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 17 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 19 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 20 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 21 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 22 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 23 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 24 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 25 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 27 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 28 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 29 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 30 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 31 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 32 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 33 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 34 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 35 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 36 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 37 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 38 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 39 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 40 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 41 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 21 invoked (no-op stub; owned by a released/disposed or foreign worker handle)
+node-bridge: stale fn handle 3 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 4 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 5 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 6 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 7 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 8 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 9 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 10 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 11 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 12 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 13 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 14 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 15 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 16 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 17 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 19 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 20 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 21 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 22 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 23 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 24 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 25 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 27 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 28 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 29 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 30 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 31 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 32 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 33 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 34 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 35 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 36 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 37 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 38 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 39 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 40 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 41 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 24 invoked (no-op stub; owned by a released/disposed or foreign worker handle)
+node-bridge: stale fn handle 3 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 4 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 5 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 6 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 7 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 8 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 9 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 10 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 11 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 12 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 13 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 14 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 15 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 16 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 17 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 19 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 20 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 21 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 22 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 23 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 24 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 25 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 27 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 28 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 29 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 30 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 31 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 32 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 33 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 34 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 35 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 36 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 37 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 38 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 39 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 40 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 41 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 invoked (no-op stub; owned by a released/disposed or foreign worker handle)
+node-bridge: stale fn handle 3 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 4 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 5 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 6 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 7 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 8 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 9 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 10 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 11 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 12 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 13 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 14 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 15 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 16 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 17 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 19 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 20 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 21 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 22 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 23 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 24 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 25 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 27 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 28 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 29 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 30 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 31 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 32 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 invoked (no-op stub; owned by a released/disposed or foreign worker handle)
+node-bridge: stale fn handle 3 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 4 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 5 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 6 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 7 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 8 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 9 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 10 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 11 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 12 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 13 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 14 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 15 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 16 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 17 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 19 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 20 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 21 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 22 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 23 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 24 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 25 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 invoked (no-op stub; owned by a released/disposed or foreign worker handle)
+node-bridge: stale fn handle 3 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 4 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 5 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 6 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 7 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 8 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 9 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 10 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 11 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 12 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 13 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 14 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 15 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 16 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 17 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 19 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 20 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 21 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 22 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 23 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 24 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 25 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 invoked (no-op stub; owned by a released/disposed or foreign worker handle)
+node-bridge: stale fn handle 3 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 4 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 5 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 6 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 7 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 8 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 9 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 10 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 11 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 12 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 13 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 14 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 15 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 16 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 17 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 19 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 20 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 21 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 22 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 23 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 24 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 25 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 invoked (no-op stub; owned by a released/disposed or foreign worker handle)
+node-bridge: stale fn handle 3 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 4 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 5 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 6 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 7 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 8 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 9 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 10 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 11 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 12 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 13 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 14 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 15 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 16 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 17 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 19 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 20 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 21 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 22 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 23 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 24 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 25 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 27 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 28 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 29 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 30 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 31 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 32 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 33 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 34 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 35 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 invoked (no-op stub; owned by a released/disposed or foreign worker handle)
+node-bridge: stale fn handle 3 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 4 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 5 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 6 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 7 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 8 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 9 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 10 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 11 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 12 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 13 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 14 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 15 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 16 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 17 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 19 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 20 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 21 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 22 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 23 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 24 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 25 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 27 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 28 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 29 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 30 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 31 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 32 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 33 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 34 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 35 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 invoked (no-op stub; owned by a released/disposed or foreign worker handle)
+node-bridge: stale fn handle 4 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 5 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 6 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 7 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 8 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 9 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 10 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 11 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 12 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 13 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 14 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 15 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 16 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 17 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 19 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 20 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 21 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 22 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 23 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 invoked (no-op stub; owned by a released/disposed or foreign worker handle)
+node-bridge: stale fn handle 3 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 4 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 5 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 6 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 7 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 8 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 9 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 10 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 11 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 12 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 13 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 14 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 15 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 16 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 17 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 19 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 20 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 21 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 22 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 23 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 24 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 25 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 27 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 28 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 29 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 30 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 31 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 32 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 33 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 34 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 35 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 36 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 37 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 38 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 39 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 40 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 41 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 24 invoked (no-op stub; owned by a released/disposed or foreign worker handle)
+node-bridge: stale fn handle 3 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 4 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 5 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 6 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 7 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 8 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 9 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 10 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 11 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 12 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 13 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 14 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 15 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 16 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 17 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 18 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 19 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 20 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 21 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 22 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 23 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 24 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 25 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 26 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 27 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 28 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 29 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 30 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 31 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 32 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 33 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 34 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 35 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 36 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 37 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 38 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 39 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 40 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 41 (released or foreign worker); returning no-op stub
+node-bridge: stale fn handle 20 invoked (no-op stub; owned by a released/disposed or foreign worker handle)
 dshj: profile 'full' booted (dsh profile D:\code\dsh-java\build\m7-4\home\profiles\full):
+  - timer  [NODE]  @deepseek-ai/cordis-plugin-timer
   - llm  [NODE]  @deepseek-ai/dsh-llm
   - session  [NODE]  @deepseek-ai/dsh-session
   - typert-loader  [NODE]  @deepseek-ai/dsh-typert-loader
+  - session-title  [NODE]  @deepseek-ai/dsh-session-title
   - session-title-llm  [NODE]  @deepseek-ai/dsh-session-title-first-prompt-llm
   - user-questions  [NODE]  @deepseek-ai/dsh-user-questions
   - agent  [NODE]  @deepseek-ai/dsh-agent
@@ -9,7 +406,9 @@ dshj: profile 'full' booted (dsh profile D:\code\dsh-java\build\m7-4\home\profil
   - jobs  [NODE]  @deepseek-ai/dsh-jobs-local
   - llm-retry  [NODE]  @deepseek-ai/dsh-llm-retry
   - credentials  [NODE]  @deepseek-ai/dsh-credentials-local
+  - llm-pi-ai  [NODE]  @deepseek-ai/dsh-llm-pi-ai
   - attachment-local  [NODE]  @deepseek-ai/dsh-attachment-local
+  - session-query-sqlite  [NODE]  @deepseek-ai/dsh-session-query-sqlite
   - session-projection  [NODE]  @deepseek-ai/dsh-session-projection
   - session-telemetry-otel  [NODE]  @deepseek-ai/dsh-session-telemetry-otel
   - subprocess  [NODE]  @deepseek-ai/dsh-subprocess-local
@@ -23,15 +422,20 @@ dshj: profile 'full' booted (dsh profile D:\code\dsh-java\build\m7-4\home\profil
   - tool-fs-search  [NODE]  @deepseek-ai/dsh-tool-fs-search
   - agent-instructions  [NODE]  @deepseek-ai/dsh-agent-instructions
   - skill  [NODE]  @deepseek-ai/dsh-skill
+  - skill-filesystem  [NODE]  @deepseek-ai/dsh-skill-filesystem
   - tool-skill  [NODE]  @deepseek-ai/dsh-tool-skill
+  - commands  [NODE]  @deepseek-ai/dsh-commands
   - command-feedback  [NODE]  @deepseek-ai/dsh-command-feedback
-  - goal-round-driver  [NODE]  @deepseek-ai/dsh-goal-round-driver
+  - goal  [NODE]  @deepseek-ai/dsh-goal
   - command-goal  [NODE]  @deepseek-ai/dsh-command-goal
   - token-meter  [NODE]  @deepseek-ai/dsh-token-meter
   - compaction-basic  [NODE]  @deepseek-ai/dsh-compaction-basic
   - command-compact  [NODE]  @deepseek-ai/dsh-command-compact
   - subagent  [NODE]  @deepseek-ai/dsh-subagent
+  - subagent-spawn-in-process  [NODE]  @deepseek-ai/dsh-subagent-spawn-in-process
+  - subagent-fork-in-process  [NODE]  @deepseek-ai/dsh-subagent-fork-in-process
   - tool-subagent-control  [NODE]  @deepseek-ai/dsh-tool-subagent-control
+  - tool-subagent-list-agents  [NODE]  @deepseek-ai/dsh-tool-subagent-control/list-agents
   - tool-subagent  [NODE]  @deepseek-ai/dsh-tool-subagent
   - tool-subagent-fork  [NODE]  @deepseek-ai/dsh-tool-subagent
   - tool-subagent-report  [NODE]  @deepseek-ai/dsh-tool-subagent-report
@@ -48,8 +452,11 @@ dshj: profile 'full' booted (dsh profile D:\code\dsh-java\build\m7-4\home\profil
   - tool-str-replace-editor  [NODE]  @deepseek-ai/dsh-tool-str-replace-editor
   - repeat-tool-reminder  [NODE]  @deepseek-ai/dsh-repeat-tool-reminder
   - web  [NODE]  @deepseek-ai/dsh-web
+  - web-search-deepseek  [NODE]  @deepseek-ai/dsh-web-search-deepseek
   - tool-web  [NODE]  @deepseek-ai/dsh-tool-web
   - system-prompt  [NODE]  @deepseek-ai/dsh-system-prompt
+  - fs-sandbox  [NODE]  @deepseek-ai/dsh-fs-sandbox
+  - llm-deepseek  [NODE]  @deepseek-ai/dsh-llm-deepseek
 dshj: node module bases: [D:\code\dsh-java\vendor\dsh\node_modules, D:\code\dsh-java\build\m7-4\home\profiles\full\node_modules]
 
 dshj: profile 'full' is running on the Java harness. Ctrl+C to stop.
