@@ -36,6 +36,17 @@ public final class RemoteObject {
     }
 
     /**
+     * 读取 JS 对象的一个属性(M7-7 发射器形状补齐):JS 属性访问本身会触发 getter,故
+     * getter 派生值(config / sandboxMode)、数据字段(id)与子发射器成员(session.events,
+     * live 子对象)都能经此读回。结果递归句柄化:live 子对象 / iterable → 新
+     * {@link RemoteObject}/{@link JsIterable}(可继续订阅/遍历),函数 → fn 句柄。
+     */
+    public Object get(String property) {
+        if (released) throw new NodeBridgeError("remote object handle " + handle + " already released");
+        return host.invokeGet(handle, property);
+    }
+
+    /**
      * 把该远程对象投射为一个 Java 接口的动态代理:接口方法调用按方法名转发到 worker
      * (参数 / 返回值走桥序列化)。仅供调用方把已知形状的远程对象当本地接口用。
      */

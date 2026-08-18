@@ -885,6 +885,18 @@ async function handleRequest(msg) {
       // M7-7:live 对象方法返回的嵌套 live 对象同样递归句柄化。
       return { type: 'result', id: msg.id, value: serializeValue(result, undefined, { liveHandles: true }) }
     }
+    case 'invokeGet': {
+      // M7-7 发射器形状补齐:live 对象属性读(含 getter —— JS 属性访问本身触发 accessor)。
+      // 补齐方法之外的成员形状:子发射器(session.events)、getter 派生值(config/sandboxMode)、
+      // 数据字段(id)。结果递归句柄化:live 子对象 / iterable → 句柄(Java 得 RemoteObject /
+      // JsIterable 订阅/遍历),函数 → fn 句柄,普通值 → JSON。
+      if (typeof msg.handle !== 'number') throw new Error('bad obj handle ' + JSON.stringify(msg.handle))
+      const obj = objById.get(msg.handle)
+      if (obj === undefined) throw new Error('unknown obj handle ' + msg.handle)
+      const prop = msg.prop
+      if (typeof prop !== 'string' || prop.length === 0) throw new Error('bad obj property')
+      return { type: 'result', id: msg.id, value: serializeValue(obj[prop], undefined, { liveHandles: true }) }
+    }
     case 'release': {
       if (msg.handle && typeof msg.handle === 'object' && msg.handle.$kind === 'fn') fnById.delete(msg.handle.id)
       else if (typeof msg.handle === 'number') fnById.delete(msg.handle)

@@ -147,10 +147,18 @@ export class Service {
     // the class's public methods (prototype) must become own properties to
     // survive `provide` → Java → `get`. Bind them so `this` stays the
     // original instance even when called off the reconstructed object.
+    // Accessors (getters/setters) are deliberately skipped, never evaluated:
+    // `typeof self[key]` would invoke a getter during construction — subclass
+    // getters may depend on fields the subclass assigns only AFTER super()
+    // returns (pwsh-local's `get config()` calls `this.source()`, assigned in
+    // the subclass constructor) → "this.source is not a function". Getters
+    // resolve through the prototype chain on their own and are not own
+    // enumerable, so they neither need binding nor cross the bridge.
     for (let proto = Object.getPrototypeOf(self); proto !== null && proto !== Object.prototype; proto = Object.getPrototypeOf(proto)) {
       for (const key of Object.getOwnPropertyNames(proto)) {
         if (key === 'constructor' || key === 'name') continue
-        if (typeof self[key] !== 'function') continue
+        const desc = Object.getOwnPropertyDescriptor(proto, key)
+        if (!desc || typeof desc.value !== 'function') continue
         self[key] = self[key].bind(self)
       }
     }

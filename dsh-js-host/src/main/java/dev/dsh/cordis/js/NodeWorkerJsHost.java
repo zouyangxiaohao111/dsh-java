@@ -313,6 +313,14 @@ public final class NodeWorkerJsHost implements JsHost {
         return fromJsonNode(request("invokeObj", payload));
     }
 
+    /** 读取 JS 侧 live 对象的一个属性(M7-7 发射器形状补齐:含 getter、子发射器成员)。 */
+    Object invokeGet(long handle, String prop) {
+        ObjectNode payload = mapper.createObjectNode();
+        payload.put("handle", handle);
+        payload.put("prop", prop);
+        return fromJsonNode(request("invokeGet", payload));
+    }
+
     /** 释放一个 JS 侧 live 对象 / iterable 句柄(worker 删除 objById 条目)。fire-and-forget。 */
     void releaseObj(long handle) {
         remoteObjects.remove(handle);
