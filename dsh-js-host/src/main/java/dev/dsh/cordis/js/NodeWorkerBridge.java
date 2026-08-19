@@ -144,6 +144,10 @@ public final class NodeWorkerBridge {
     private JsonNode doProvide(JsonNode args) {
         String name = args.path(0).asText("");
         Object value = host.fromJsonNode(args.get(1));
+        // M7-8:提供值里的 live 对象句柄导出为全局句柄(worker 侧 objById 条目迁到全局 id +
+        // 跨 worker 路由注册),使兄弟 worker ctx.get 得到的 {$kind:'obj'} 句柄可路由回本 worker。
+        // 纯数据值 / fn 句柄 / 纯迭代器不受影响(不强转)。reader 线程上仅 sendNoWait,非阻塞。
+        value = host.exportRemoteDeep(value);
         ctx.provide(name, value);
         return NullNode.instance;
     }

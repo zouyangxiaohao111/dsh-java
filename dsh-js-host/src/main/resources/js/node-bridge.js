@@ -193,6 +193,13 @@ const ctxById = new Map() // id → ctx shim
 const objById = new Map() // id → live 对象 / iterable 视图(M7-7,经 invokeObj RPC 调用)
 let nextHandle = 1
 
+// M7-8:全局句柄 id 基址(与 NodeWorkerJsHost GLOBAL_OBJ_ID_BASE / GLOBAL_FN_ID_BASE 对齐)。
+// Java 给跨 worker 句柄分配的 id 在此之上,远大于 worker 本地 nextHandle 计数;worker 据此
+// 分辨"本地句柄(监听器回调,泵内延迟)"与"跨 worker 句柄(服务方法/getter/回调,泵内内联
+// 处理防互等死锁)"。
+const GLOBAL_OBJ_ID_BASE = 100_000_000
+const GLOBAL_FN_ID_BASE = 200_000_000
+
 // ---- 值序列化(worker → Java)----
 // 函数 → {$kind:'fn',id,length};普通值走 JSON。服务句柄({$kind:'svc',id} 与
 // {$kind:'ctx'/'module'} 标记)是普通 JSON 对象,原样透传回 Java。
@@ -233,6 +240,29 @@ function isLiveObject(v) {
   return false
 }
 
+/**
+ * 是否"纯迭代器/生成器":原型链成员只有迭代器协议(next/return/throw)。M7-8 用它区分
+ * 两类"既是 iterable 又是 live 对象"的值:
+ *   - 纯生成器/迭代器(gen()、iterator view)→ 仍是 {$kind:'iter'}(Java 侧 JsIterable 遍历);
+ *   - 带业务方法(如 Service 服务的 list()/get()/Symbol.iterator)→ {$kind:'obj'}(方法可调 +
+ *     成员可读),避免 iter 分支吞掉方法面。
+ */
+function isPureIterator(v) {
+  // 标准集合(Set/Map)是数据容器,不是带业务方法的 live 服务对象 → 仍走 iter 分支(可遍历,
+  // Java 侧 JsIterable),不把数据容器当服务句柄。
+  const ctor = v && v.constructor
+  if (ctor === Set || ctor === Map) return true
+  if (typeof v.next !== 'function') return false
+  const proto = Object.getPrototypeOf(v)
+  if (proto === null || proto === Object.prototype) return false
+  const names = Object.getOwnPropertyNames(proto)
+  for (const n of names) {
+    if (n === 'constructor' || n === 'next' || n === 'return' || n === 'throw') continue
+    return false
+  }
+  return true
+}
+
 /** 把 iterable/iterator 归一成"只有 next()"的视图(Java 侧只调 next())。 */
 function makeIterableView(v) {
   const iter = (typeof v.next === 'function') ? v : v[Symbol.iterator]()
@@ -262,19 +292,23 @@ function serializeValue(v, seen, opts) {
   }
   if (t === 'symbol') return { $kind: 'symbol' }
   if (t === 'object') {
+    // M7-8:live 对象优先于纯 iterable —— 带业务方法的可迭代服务(如 Service 的
+    // list()/get() + Symbol.iterator)必须保留方法面({$kind:'obj'}),否则 iter 分支会吞掉
+    // 方法(Java 侧只得 JsIterable,方法不可调)。纯生成器/迭代器(isPureIterator)仍走 iter
+    // 分支,保持 M7-7 语义(Java 侧 JsIterable 遍历)。
+    if (liveHandles && isLiveObject(v) && !isPureIterator(v)) {
+      const id = nextHandle++
+      objById.set(id, v)
+      return { $kind: 'obj', id }
+    }
     // 非数组 iterable/iterator:一律跨桥为句柄(Java 可遍历;数组仍是数据)。
     if (isIteratorLike(v)) {
       const id = nextHandle++
       objById.set(id, makeIterableView(v))
       return { $kind: 'iter', id }
     }
-    // live 对象:仅方法返回上下文(liveHandles)句柄化 —— provide/emit 等保持 M5-NEEDS
-    // (方法 → fn 句柄、数据 → JSON),不破坏 Java 侧读提供值(Map)的既有语义。
-    if (liveHandles && isLiveObject(v)) {
-      const id = nextHandle++
-      objById.set(id, v)
-      return { $kind: 'obj', id }
-    }
+    // live 对象:仅方法返回上下文(liveHandles)句柄化 —— 纯数据 provide/emit 等仍可 JSON
+    // (不强转),不破坏 Java 侧读纯数据提供值(Map)的既有语义。
     const active = seen || new WeakSet()
     if (active.has(v)) return { $kind: 'cycle' }   // 循环引用:降级为标记(此前抛错挂加载)
     active.add(v)
@@ -311,12 +345,30 @@ function deserializeValue(v) {
   if (v === null || typeof v !== 'object') return v
   if (v.$kind === 'fn') {
     const fn = fnById.get(v.id)
-    if (typeof fn !== 'function') {
-      process.stderr.write('node-bridge: stale fn handle ' + v.id
-        + ' (released or foreign worker); returning no-op stub\n')
-      return makeStaleFn(v.id)
+    if (typeof fn === 'function') return fn
+    // M7-8:跨 worker 的 fn 句柄(指向其它 worker 的 JS 函数,如 skill 服务方法收到的回调参数)
+    // → 经 Java 路由到属主 worker 执行(invokeService '$call' → FUNCTION_OWNERS → 属主宿主
+    // invokeFn)。Java 侧无该句柄路由(真正陈旧/已 release)→ 抛错 → 降级为 no-op stub
+    // (保持 M7-6 容忍语义,不挂加载)。
+    const remote = function () {
+      const args = Array.prototype.slice.call(arguments)
+      try {
+        // liveHandles:回调参数里的 live 对象(如 service 传的 AbortSignal)以句柄跨桥,属主
+        // worker 之外仍可调方法(skill FileSystemSkillProvider 的 control.signal.addEventListener
+        // 同形);纯数据参数不受影响。
+        return syncBridgeCall('invokeService', {
+          handle: v.id, method: '$call',
+          args: args.map(x => serializeValue(x, undefined, { liveHandles: true })),
+        })
+      } catch (e) {
+        if (remote._warned) return undefined
+        remote._warned = true
+        process.stderr.write('node-bridge: remote fn handle ' + v.id + ' invocation failed ('
+          + (e && e.message ? e.message : e) + '); no-op\n')
+        return undefined
+      }
     }
-    return fn
+    return remote
   }
   if (v.$kind === 'undefined') return undefined
   if (v.$kind === 'module') {
@@ -344,14 +396,41 @@ function deserializeValue(v) {
   return out
 }
 
-// ---- Java 服务句柄 → JS 可调 Proxy ----
+// ---- 服务句柄 → JS 可调 Proxy ----
 // 直接调用 svc(...) → invokeService {$call};成员访问 svc.method(...) →
-// invokeService {method}。method 走 Java 反射。then 返回 undefined,避免 JS
-// Promise 把服务对象误当 thenable 吸收。
+// invokeService {method}(method 走 Java 反射 / JS 侧 invokeObj)。
+// M7-8 扩展:成员值读(svc.getter 属性访问)与普通方法调用区分 —— proxy 首次访问某成员时
+// 经 $members 拉取成员描述符(缓存):方法 → 可调用函数;getter/数据字段 → $get 直接读值
+// (触发 worker 侧 getter)。这样 `ctx.shell.sandboxMode`(permission 同形)读到真实值
+// 而不是一个函数;`ctx.agents.list()` 仍是方法调用。
+// then 返回 undefined,避免 JS Promise 把服务对象误当 thenable 吸收。
 function makeServiceProxy(handle) {
+  // M7-8:参数带 liveHandles 序列化 —— 方法参数里的 live 对象(如 llm.registerAdapter 的
+  // adapter 类实例)以句柄跨桥,读方可路由回属主调用其方法;纯数据参数不受影响(不强转)。
   const invoke = (method, args) =>
-    syncBridgeCall('invokeService', { handle, method, args: args.map(x => serializeValue(x)) })
+    syncBridgeCall('invokeService', { handle, method, args: args.map(x => serializeValue(x, undefined, { liveHandles: true })) })
   const callable = (...args) => invoke('$call', args)
+  // 成员描述符缓存:name → 'function' | 'value'(getter/数据字段)。$members 失败(旧宿主 /
+  // 不支持)时退化为"全部可调用",保持 M7-7 行为。
+  let memberKinds = null
+  const kinds = () => {
+    if (memberKinds === null) {
+      memberKinds = new Map()
+      try {
+        const list = invoke('$members', [])
+        if (Array.isArray(list)) {
+          for (const it of list) {
+            if (it && typeof it === 'object' && typeof it.name === 'string') {
+              memberKinds.set(it.name, it.type === 'function' ? 'function' : 'value')
+            }
+          }
+        }
+      } catch (e) {
+        // $members 不可用:退化为全部方法可调用(不抛,不破坏既有服务代理)
+      }
+    }
+    return memberKinds
+  }
   return new Proxy(callable, {
     get(target, prop, receiver) {
       if (prop === 'then') return undefined
@@ -379,9 +458,25 @@ function makeServiceProxy(handle) {
         }
       }
       if (typeof prop === 'symbol') return undefined
-      return (...args) => invoke(String(prop), args)
+      const name = String(prop)
+      // getter/数据字段成员 → 直接读值(invokeService '$get' → invokeGet 触发 getter)。
+      if (kinds().get(name) === 'value') return invoke('$get', [name])
+      return (...args) => invoke(name, args)
     },
   })
+}
+
+/** M7-8:消息携带的 fn 句柄是否为跨 worker 全局句柄(id ≥ GLOBAL_FN_ID_BASE)。 */
+function isGlobalFnHandle(h) {
+  return !!h && typeof h === 'object' && h.$kind === 'fn' && typeof h.id === 'number' && h.id >= GLOBAL_FN_ID_BASE
+}
+
+/** 泵动 microtask 链(限次):让 dispatchRequest 的 .then(发送回复)在同步泵内真正发出。
+ *  仅驱动 microtask(不碰 macrotask/事件循环);超限静默放弃,由事件循环稍后补发。 */
+function pumpMicrotasks() {
+  for (let i = 0; i < 256 && process._tickCallback && !closing; i++) {
+    process._tickCallback()
+  }
 }
 
 // ---- 嵌套 RPC:ctx 方法 / 服务方法 需同步等 Java 回复 ----
@@ -407,6 +502,43 @@ function syncBridgeCall(type, payload) {
     if (msg.type === 'ctxResult' && msg.id === id) {
       if (msg.error) throw new Error('java bridge error: ' + msg.error)
       return deserializeValue(msg.result)
+    }
+    // M7-8:rehandleObj 是纯注册表操作(把 objById 条目迁到全局 id),**泵内同步处理** ——
+    // 提供方 worker 在 provide 后紧接着自读自己的服务(ctx.get → {$kind:'obj', id:全局id})
+    // 时必须已把条目迁好,否则自读返回代理 → 代理首次调用($members)经 Java helper 线程
+    // 回发 → 泵内再次延迟 → helper 超时死锁。同步迁移无监听器副作用,不违反"泵内不内联
+    // 执行重入消息"的设计约束(那条针对监听器触发的状态变更)。
+    if (msg.type === 'rehandleObj') {
+      if (typeof msg.from === 'number' && typeof msg.to === 'number') {
+        const v = objById.get(msg.from)
+        if (v !== undefined) {
+          objById.delete(msg.from)
+          objById.set(msg.to, v)
+        }
+      }
+      continue
+    }
+    if (msg.type === 'rehandleFn') {
+      if (typeof msg.from === 'number' && typeof msg.to === 'number') {
+        const fn = fnById.get(msg.from)
+        if (typeof fn === 'function') {
+          fnById.delete(msg.from)
+          fnById.set(msg.to, fn)
+        }
+      }
+      continue
+    }
+    // M7-8:跨 worker RPC 请求(invokeObj / invokeGet / invokeMembers / 全局 fn 回调)泵内
+    // **内联分发 + 泵动 microtask 让回复发出**。否则调用方 worker 同步等回复、本 worker 泵内
+    // 延迟该请求 → 跨 worker 互等死锁(skill 的 registerProvider(cb) 同形:worker B 泵等
+    // registerProvider 回复,而回复依赖 worker A 调用的 cb,cb 恰是发给 worker B 的 invokeFn)。
+    // 本地 fn 的 invokeFn(监听器回调)保持延迟入队,防监听器在等待中途触发导致状态错乱。
+    // 泵内不得分发 'apply'/'load' 等重型请求(它们会再进泵,语义不受益)。
+    if (msg.type === 'invokeObj' || msg.type === 'invokeGet' || msg.type === 'invokeMembers'
+        || (msg.type === 'invokeFn' && isGlobalFnHandle(msg.handle))) {
+      dispatchRequest(msg)
+      pumpMicrotasks()
+      continue
     }
     // 不是本请求的回复:可能是 Java 并发发来的请求(如 invokeFn)或其它异步桥的回复
     // → 入队,**泵期间不内联执行**(防监听器在等待中途触发导致状态错乱)。调度一次
@@ -484,7 +616,11 @@ function makeCtx(ctxId) {
     on: (name, listener, opts) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'on', args: [serializeValue(listener), name, opts || {}] }),
     once: (name, listener, opts) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'once', args: [serializeValue(listener), name, opts || {}] }),
     emit: (name, ...args) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'emit', args: [name, args.map(x => serializeValue(x))] }),
-    provide: (name, value) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'provide', args: [name, serializeValue(value)] }),
+    // M7-8:provide 的服务值带 liveHandles 序列化 —— live 对象(Service 子类实例等)跨桥为
+    // {$kind:'obj'} 句柄(提供方注册进 objById),Java 核心记下句柄 + 属主 worker,兄弟 worker
+    // ctx.get 得到指向属主 worker 的 live 代理(方法/getter 经桥路由回属主执行)。纯数据值
+    // 不受影响(仍 JSON),与 M7-7 兼容(方法返回的句柄化机制不变)。
+    provide: (name, value) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'provide', args: [name, serializeValue(value, undefined, { liveHandles: true })] }),
     get: (name) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'get', args: [name] }),
     inject: (deps, cb) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'inject', args: [deps.map(x => serializeValue(x)), serializeValue(cb)] }),
     accessor: (name, options) => syncBridgeCall('ctxCall', {
@@ -896,6 +1032,53 @@ async function handleRequest(msg) {
       const prop = msg.prop
       if (typeof prop !== 'string' || prop.length === 0) throw new Error('bad obj property')
       return { type: 'result', id: msg.id, value: serializeValue(obj[prop], undefined, { liveHandles: true }) }
+    }
+    case 'invokeMembers': {
+      // M7-8:live 对象成员描述符(name → 'function'/'value')。JS 侧服务代理据此分辨
+      // 方法(可调用)与 getter/数据字段(直接读值)。遍历原型链收集字符串成员;
+      // 原型上的 accessor(get/set)归为 'value',函数归为 'function',数据字段归为 'value'。
+      if (typeof msg.handle !== 'number') throw new Error('bad obj handle ' + JSON.stringify(msg.handle))
+      const obj = objById.get(msg.handle)
+      if (obj === undefined) throw new Error('unknown obj handle ' + msg.handle)
+      const seen = new Map()   // name → type
+      for (let o = obj; o !== null && o !== Object.prototype; o = Object.getPrototypeOf(o)) {
+        for (const n of Object.getOwnPropertyNames(o)) {
+          if (n === 'constructor' || seen.has(n)) continue
+          const d = Object.getOwnPropertyDescriptor(o, n)
+          let type = 'function'   // 未知成员默认方法(兼容 M7-7:一切可调用)
+          if (d) {
+            if (typeof d.value === 'function') type = 'function'
+            else if (typeof d.get === 'function' || typeof d.set === 'function') type = 'value'
+            else type = 'value'
+          }
+          seen.set(n, type)
+        }
+      }
+      const out = []
+      for (const [name, type] of seen) out.push({ name, type })
+      return { type: 'result', id: msg.id, value: out }
+    }
+    case 'rehandleObj': {
+      // M7-8:Java 把本地 obj 句柄迁到全局 id(跨 worker 服务路由的句柄空间)。
+      // 提供方 worker 把条目从 from 移到 to,后续跨 worker 调用(经全局 id)路由回本 worker。
+      if (typeof msg.from !== 'number' || typeof msg.to !== 'number') throw new Error('bad rehandleObj')
+      const v = objById.get(msg.from)
+      if (v !== undefined) {
+        objById.delete(msg.from)
+        objById.set(msg.to, v)
+      }
+      return { type: 'result', id: msg.id, value: null }
+    }
+    case 'rehandleFn': {
+      // M7-8:跨 worker 回调参数 —— Java 把本地 fn 句柄迁到全局 id(与 rehandleObj 同构),
+      // 使属主 worker 的 fnById 在全局 id 下仍能命中,其它 worker 经 Java 路由回来执行。
+      if (typeof msg.from !== 'number' || typeof msg.to !== 'number') throw new Error('bad rehandleFn')
+      const fn = fnById.get(msg.from)
+      if (typeof fn === 'function') {
+        fnById.delete(msg.from)
+        fnById.set(msg.to, fn)
+      }
+      return { type: 'result', id: msg.id, value: null }
     }
     case 'release': {
       if (msg.handle && typeof msg.handle === 'object' && msg.handle.$kind === 'fn') fnById.delete(msg.handle.id)

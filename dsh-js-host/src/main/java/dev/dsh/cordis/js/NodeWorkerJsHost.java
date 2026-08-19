@@ -75,6 +75,22 @@ public final class NodeWorkerJsHost implements JsHost {
     /** M7-7:remote 句柄 GC 后兜底释放(代理不可达时 worker 侧注册表不泄漏)。 */
     private final Cleaner cleaner = Cleaner.create();
 
+    // ---- M7-8:跨 worker 服务路由(provide 通道服务句柄化)----
+    // 提供方 worker 把服务对象注册为 objById,Java 分配全局句柄 id(≥ GLOBAL_OBJ_ID_BASE,
+    // 远大于 worker 本地 nextHandle 计数 → 永不与任一 worker 的本地 obj/fn 句柄冲突)并
+    // rehandle(worker 侧 objById 条目迁到全局 id)。全局 id → 属主宿主 的映射 JVM 级共享,
+    // 使读方 worker 的宿主能把 invokeService(invokeObj/invokeGet/invokeMembers)转发回属主
+    // worker。宿主关闭 / 句柄释放时清理条目。
+    private static final long GLOBAL_OBJ_ID_BASE = 100_000_000L;
+    private static final Map<Long, NodeWorkerJsHost> REMOTE_OBJ_OWNERS = new ConcurrentHashMap<>();
+    private static final AtomicLong GLOBAL_OBJ_ID = new AtomicLong(GLOBAL_OBJ_ID_BASE);
+    // M7-8:跨 worker 回调 —— 服务方法参数里的 fn 句柄导出为全局 id(≥ GLOBAL_FN_ID_BASE,
+    // 与 obj 空间错开),全局 fn id → 属主宿主 映射,使属主 worker 之外的 worker 能经 Java
+    // 路由回来执行回调(如 skill 服务的 registerProvider(cb)、systemPrompt.tools(cb))。
+    private static final long GLOBAL_FN_ID_BASE = 200_000_000L;
+    private static final Map<Long, NodeWorkerJsHost> FUNCTION_OWNERS = new ConcurrentHashMap<>();
+    private static final AtomicLong GLOBAL_FN_ID = new AtomicLong(GLOBAL_FN_ID_BASE);
+
     private final AtomicLong seq = new AtomicLong(1);
     private final AtomicLong serviceSeq = new AtomicLong(1_000_000);
 
@@ -239,9 +255,16 @@ public final class NodeWorkerJsHost implements JsHost {
         return fromJsonNode(resp);
     }
 
-    /** 阻塞调用 JS 函数句柄。 */
+    /** 阻塞调用 JS 函数句柄(全局 fn 句柄跨 worker 路由到属主宿主执行)。 */
     Object invokeFn(NodeRef fn, List<Object> args) {
         if (!"fn".equals(fn.kind())) throw new NodeBridgeError("not a function handle: " + fn);
+        NodeWorkerJsHost owner = FUNCTION_OWNERS.get(fn.id());
+        if (owner != null && owner != this) return owner.invokeFnRpc(fn, args);
+        return invokeFnRpc(fn, args);
+    }
+
+    /** 阻塞调用本 worker 的 JS 函数句柄(invokeFn RPC)。 */
+    private Object invokeFnRpc(NodeRef fn, List<Object> args) {
         ObjectNode payload = mapper.createObjectNode();
         payload.set("handle", toJsonNode(fn));
         payload.set("args", toJsonArray(args));
@@ -283,6 +306,7 @@ public final class NodeWorkerJsHost implements JsHost {
      */
     void releaseFn(NodeRef fn) {
         if (fn == null || !"fn".equals(fn.kind())) return;
+        FUNCTION_OWNERS.remove(fn.id());   // M7-8:全局 fn 句柄路由清理(本地 id 为 no-op)
         sendNoWait("release", jsonOf("handle", fn.id()));
     }
 
@@ -293,19 +317,48 @@ public final class NodeWorkerJsHost implements JsHost {
         return new NodeRef(id, "svc");
     }
 
-    /** 反射调用远程 Java 服务(worker 经 invokeService 消息发起);JS 侧 live 对象句柄 → 转发 worker。 */
+    /**
+     * 反射调用远程服务(worker 经 invokeService 消息发起)。三类路由:
+     *   - Java 服务(services 注册)→ {@link ServiceInvoker}(含 M7-8 $members/$get 元操作);
+     *   - JS 侧句柄(RemoteObject / JsIterable,remoteObjects 或 REMOTE_OBJ_OWNERS)→ 转发到
+     *     属主 worker 执行(invokeObj / invokeGet / invokeMembers)。
+     * 注意:reader 线程上不得阻塞转发**本 worker 自己的句柄**(会死锁)——调用方
+     * (respondToWorker)已在转发前把自持句柄分流到 helper 线程;跨 worker 转发阻塞在
+     * 属主宿主的 reader 线程上,可安全内联。
+     */
     Object invokeService(long handle, String method, List<Object> args) {
+        // M7-8:全局 fn 句柄(跨 worker 回调参数)→ 路由到属主 worker 执行(invokeFn)。
+        NodeWorkerJsHost fnOwner = FUNCTION_OWNERS.get(handle);
+        if (fnOwner != null) {
+            return fnOwner.invokeFnRpc(new NodeRef(handle, "fn"), args);
+        }
         Object svc = services.get(handle);
-        if (svc != null) return ServiceInvoker.invoke(svc, method, args);
-        // M7-7:JS 侧句柄(RemoteObject / JsIterable 注册)转发到属主 worker 执行(invokeObj)。
-        // 注意:reader 线程上不得阻塞转发(会死锁)——调用方(respondToWorker)已在转发前
-        // 分流到 helper 线程;此处供非 reader 线程(应用线程 / helper 线程)使用。
-        if (remoteObjects.containsKey(handle)) return invokeObj(handle, method, args);
-        throw new NodeBridgeError("unknown service handle " + handle);
+        if (svc != null) {
+            if ("$members".equals(method)) return ServiceInvoker.members(svc);
+            if ("$get".equals(method)) {
+                String name = args.isEmpty() ? "" : String.valueOf(args.get(0));
+                return ServiceInvoker.field(svc, name);
+            }
+            return ServiceInvoker.invoke(svc, method, args);
+        }
+        NodeWorkerJsHost owner = ownerOf(handle);
+        if (owner == null) throw new NodeBridgeError("unknown service handle " + handle);
+        if ("$members".equals(method)) return owner.invokeMembersRpc(handle);
+        if ("$get".equals(method)) {
+            String name = args.isEmpty() ? "" : String.valueOf(args.get(0));
+            return owner.invokeGetRpc(handle, name);
+        }
+        return owner.invokeObjRpc(handle, method, args);
     }
 
-    /** 阻塞调用 JS 侧 live 对象方法(RemoteObject / JsIterable 的 RPC 底层)。 */
-    Object invokeObj(long handle, String method, List<Object> args) {
+    /** M7-8:把句柄解析到属主宿主 —— 本 worker(remoteObjects 注册)或跨 worker 全局句柄。 */
+    private NodeWorkerJsHost ownerOf(long handle) {
+        if (remoteObjects.containsKey(handle)) return this;
+        return REMOTE_OBJ_OWNERS.get(handle);
+    }
+
+    /** 阻塞调用本 worker 的 JS 侧 live 对象方法(invokeObj RPC)。 */
+    private Object invokeObjRpc(long handle, String method, List<Object> args) {
         ObjectNode payload = mapper.createObjectNode();
         payload.put("handle", handle);
         payload.put("method", method);
@@ -313,21 +366,142 @@ public final class NodeWorkerJsHost implements JsHost {
         return fromJsonNode(request("invokeObj", payload));
     }
 
-    /** 读取 JS 侧 live 对象的一个属性(M7-7 发射器形状补齐:含 getter、子发射器成员)。 */
-    Object invokeGet(long handle, String prop) {
+    /** 阻塞读取本 worker 的 JS 侧 live 对象属性(invokeGet RPC,触发 getter)。 */
+    private Object invokeGetRpc(long handle, String prop) {
         ObjectNode payload = mapper.createObjectNode();
         payload.put("handle", handle);
         payload.put("prop", prop);
         return fromJsonNode(request("invokeGet", payload));
     }
 
-    /** 释放一个 JS 侧 live 对象 / iterable 句柄(worker 删除 objById 条目)。fire-and-forget。 */
+    /** 阻塞读取本 worker 的 JS 侧 live 对象成员描述符(invokeMembers RPC)。 */
+    private Object invokeMembersRpc(long handle) {
+        return fromJsonNode(request("invokeMembers", jsonOf("handle", handle)));
+    }
+
+    /** 阻塞调用 JS 侧 live 对象方法(RemoteObject / JsIterable 的 RPC 底层;同宿主直发)。 */
+    Object invokeObj(long handle, String method, List<Object> args) {
+        return invokeObjRpc(handle, method, args);
+    }
+
+    /** 读取 JS 侧 live 对象的一个属性(M7-7 发射器形状补齐:含 getter、子发射器成员)。 */
+    Object invokeGet(long handle, String prop) {
+        return invokeGetRpc(handle, prop);
+    }
+
+    /** M7-8:RemoteObject Map 门面的成员描述符读取(路由到属主 worker)。 */
+    Object invokeMembersForFacade(long handle) {
+        NodeWorkerJsHost owner = ownerOf(handle);
+        if (owner == null) throw new NodeBridgeError("unknown service handle " + handle);
+        return owner.invokeMembersRpc(handle);
+    }
+
+    // ---- M7-8:跨 worker 服务句柄导出(provide 值与跨 worker 方法返回里的 live 对象)----
+
+    /**
+     * 把本 worker 的本地 obj 句柄导出为全局句柄:分配全局 id → 通知 worker 把 objById 条目
+     * 迁到全局 id(rehandleObj,fire-and-forget;wire 顺序保证先于 provide/方法返回的回复)→
+     * 本机 remoteObjects re-key → 注册跨 worker 路由。已是全局的句柄(透传)原样返回。
+     */
+    RemoteObject exportRemote(RemoteObject ro) {
+        long local = ro.handle();
+        if (REMOTE_OBJ_OWNERS.containsKey(local)) return ro;   // 已全局(跨 worker 透传)
+        long g = GLOBAL_OBJ_ID.getAndIncrement();
+        sendNoWait("rehandleObj", jsonOf("from", local, "to", g));
+        remoteObjects.remove(local);
+        RemoteObject exported = new RemoteObject(this, g);
+        remoteObjects.put(g, exported);
+        cleaner.register(exported, () -> releaseObj(g));
+        REMOTE_OBJ_OWNERS.put(g, this);
+        return exported;
+    }
+
+    /**
+     * 递归导出值里的 live 对象句柄(跨 worker 方法返回 / 提供值里的嵌套 RemoteObject)。
+     * 使读方 worker 拿到的 {@code {$kind:'obj'}} id 是全局 id → 后续方法/getter 调用能路由回
+     * 属主 worker。导出始终在属主宿主上执行(ro.host() —— 结果可能来自其它宿主的 fromJsonNode,
+     * 若在本宿主 rehandle 会发给错误的 worker)。纯数据 / Java 服务 / JsIterable 原样返回
+     * (不强转)。
+     */
+    Object exportRemoteDeep(Object v) {
+        if (v instanceof RemoteObject ro) return ro.host().exportRemote(ro);
+        if (v instanceof Map<?, ?> m) {
+            for (Map.Entry<?, ?> e : new ArrayList<>(m.entrySet())) {
+                Object nv = exportRemoteDeep(e.getValue());
+                if (nv != e.getValue()) ((Map<Object, Object>) m).put(e.getKey(), nv);
+            }
+            return m;
+        }
+        if (v instanceof List<?> list) {
+            List<Object> mutable = (List<Object>) list;   // fromJsonNode 产物恒为可变 ArrayList
+            for (int i = 0; i < mutable.size(); i++) {
+                Object nv = exportRemoteDeep(mutable.get(i));
+                if (nv != mutable.get(i)) mutable.set(i, nv);
+            }
+            return v;
+        }
+        return v;
+    }
+
+    /** 释放一个 JS 侧 live 对象 / iterable 句柄(worker 删除 objById 条目;跨 worker 路由同步清理)。
+     *  fire-and-forget。 */
     void releaseObj(long handle) {
         remoteObjects.remove(handle);
+        REMOTE_OBJ_OWNERS.remove(handle);
         sendNoWait("releaseObj", jsonOf("handle", handle));
     }
 
     boolean isReaderThread(Thread t) { return t == readerThread; }
+
+    /** 测试钩子:M7-8 跨 worker 路由表是否仍含某全局句柄(泄漏检查用)。 */
+    static boolean routeRegistered(long handle) { return REMOTE_OBJ_OWNERS.containsKey(handle); }
+
+    /**
+     * 把本 worker 的本地 fn 句柄导出为全局句柄(跨 worker 服务方法参数里的回调):分配全局
+     * fn id → 通知属主 worker 把 fnById 条目迁到全局 id(rehandleFn,fire-and-forget;泵内
+     * 同步处理)→ 注册"全局 fn id → 属主宿主"路由。已是全局的句柄(透传)原样返回。
+     */
+    private NodeRef exportFn(NodeRef fn) {
+        long local = fn.id();
+        if (FUNCTION_OWNERS.containsKey(local)) return fn;   // 已全局(透传)
+        long g = GLOBAL_FN_ID.getAndIncrement();
+        sendNoWait("rehandleFn", jsonOf("from", local, "to", g));
+        FUNCTION_OWNERS.put(g, this);
+        return new NodeRef(g, "fn");
+    }
+
+    /** 递归导出跨 worker 服务参数里的 fn 句柄(仅对指向本 worker 的本地句柄导出;全局句柄 /
+     *  Java 服务句柄 / RemoteObject / 纯数据原样保留)。 */
+    private List<Object> exportFnDeep(List<Object> args) {
+        for (int i = 0; i < args.size(); i++) {
+            args.set(i, exportFnDeepValue(args.get(i)));
+        }
+        return args;
+    }
+
+    private Object exportFnDeepValue(Object v) {
+        if (v instanceof NodeRef ref && "fn".equals(ref.kind())) return exportFn(ref);
+        // RemoteObject/JsIterable 是句柄(RemoteObject 因 Map 门面也是 Map,必须先于 Map 分支
+        // 排除,否则会被当可变 Map 遍历/put → "read-only")。句柄原样保留,由 exportRemoteDeep
+        // 统一导出。
+        if (v instanceof RemoteObject || v instanceof JsIterable) return v;
+        if (v instanceof Map<?, ?> m) {
+            for (Map.Entry<?, ?> e : new ArrayList<>(m.entrySet())) {
+                Object nv = exportFnDeepValue(e.getValue());
+                if (nv != e.getValue()) ((Map<Object, Object>) m).put(e.getKey(), nv);
+            }
+            return m;
+        }
+        if (v instanceof List<?> list) {
+            List<Object> mutable = (List<Object>) list;
+            for (int i = 0; i < mutable.size(); i++) {
+                Object nv = exportFnDeepValue(mutable.get(i));
+                if (nv != mutable.get(i)) mutable.set(i, nv);
+            }
+            return v;
+        }
+        return v;
+    }
 
     // ---- 错误分类(resolver 兜底用)----
 
@@ -494,16 +668,15 @@ public final class NodeWorkerJsHost implements JsHost {
                 result = bridge.handleCtxCall(msg);
             } else {
                 long handle = msg.path("handle").asLong(-1);
-                // M7-7:worker 调 JS 侧句柄(跨 worker / 回读)需要转发 invokeObj 回属主 worker。
-                // reader 线程上不能阻塞转发(否则读不到 invokeObj 的回复 → 死锁):分到 helper
-                // 线程执行 + 回复。自持句柄(本 worker 自己创建的)经 deserializeValue 自返本地
-                // 对象,不会走到这里。
-                if (remoteObjects.containsKey(handle) && Thread.currentThread() == readerThread) {
+                // M7-8:reader 线程上对"非 Java 服务"句柄一律分到 helper 线程执行 —— 不能阻塞
+                // reader 线程:跨 worker 调用的嵌套反向调用(worker B → hostB → hostA → worker A
+                // → 回调回 worker B)会让两个 reader 线程互等死锁。Java 服务(services 注册)是纯
+                // 同步调用、无 worker 往返,reader 线程内联安全。
+                if (Thread.currentThread() == readerThread && !services.containsKey(handle)) {
                     forwardRemoteAsync(msg, id);
                     return;
                 }
-                String method = msg.path("method").asText("");
-                result = toJsonNode(invokeService(handle, method, toJavaArgs(msg.path("args"))));
+                result = toJsonNode(handleServiceInvocation(handle, msg.path("method").asText(""), msg.path("args")));
             }
             ObjectNode resp = mapper.createObjectNode();
             resp.put("type", "ctxResult");
@@ -519,13 +692,28 @@ public final class NodeWorkerJsHost implements JsHost {
         }
     }
 
-    /** reader 线程上的 JS 侧句柄转发:helper 线程阻塞等 invokeObj 回复,reader 线程继续读。 */
+    /**
+     * 处理一次 worker 发起的 invokeService:M7-8 跨 worker 语义 —— 参数里的 fn 回调导出为全局
+     * 句柄(属主 worker 之外能路由回来执行),路由到属主 worker 执行,返回里的 live 对象导出为
+     * 全局句柄(读方拿到可路由的 {$kind:'obj'} id)。Java 服务/自持句柄(本 worker)不导出。
+     */
+    private Object handleServiceInvocation(long handle, String method, JsonNode argsNode) {
+        NodeWorkerJsHost target = FUNCTION_OWNERS.get(handle);
+        if (target == null && !services.containsKey(handle)) target = ownerOf(handle);
+        List<Object> javaArgs = toJavaArgs(argsNode);
+        if (target != null && target != this) {
+            javaArgs = exportFnDeep(javaArgs);
+            exportRemoteDeep(javaArgs);   // 参数里的 live 对象(如回调的 AbortSignal)也导出,读方才可路由
+        }
+        return exportRemoteDeep(invokeService(handle, method, javaArgs));
+    }
+
+    /** reader 线程上的句柄转发:helper 线程阻塞等属主 worker 回复,reader 线程继续读(防互等死锁)。 */
     private void forwardRemoteAsync(JsonNode msg, long id) {
         Thread t = new Thread(() -> {
             try {
                 long handle = msg.path("handle").asLong(-1);
-                String method = msg.path("method").asText("");
-                Object result = invokeService(handle, method, toJavaArgs(msg.path("args")));
+                Object result = handleServiceInvocation(handle, msg.path("method").asText(""), msg.path("args"));
                 ObjectNode resp = mapper.createObjectNode();
                 resp.put("type", "ctxResult");
                 resp.put("id", id);
@@ -634,6 +822,13 @@ public final class NodeWorkerJsHost implements JsHost {
         return n;
     }
 
+    private ObjectNode jsonOf(String k1, long v1, String k2, long v2) {
+        ObjectNode n = mapper.createObjectNode();
+        n.put(k1, v1);
+        n.put(k2, v2);
+        return n;
+    }
+
     Object fromJsonNode(JsonNode v) {
         if (v == null || v.isNull()) return null;
         if (v.isObject() && v.hasNonNull("$kind")) {
@@ -696,6 +891,33 @@ public final class NodeWorkerJsHost implements JsHost {
     // ---- ServiceInvoker(仿 ServiceProxy 的反射调用,不依赖 GraalJS context)----
 
     private static final class ServiceInvoker {
+        /** M7-8:Java 服务成员描述符(供 JS 侧服务代理分辨方法/getter)。Java 服务所有
+         *  public 方法都可调用 → 全标 'function';proxy 的 get trap 对方法返回可调用。 */
+        static Object members(Object svc) {
+            List<Map<String, Object>> out = new ArrayList<>();
+            for (Method m : svc.getClass().getMethods()) {
+                if (m.getDeclaringClass() == Object.class) continue;
+                out.add(Map.of("name", m.getName(), "type", "function"));
+            }
+            return out;
+        }
+
+        /** M7-8:Java 服务成员值读(proxy 的 $get):public 实例字段读。方法名落到这里 → 无字段
+         *  返回 null(仅防御;proxy 只在成员类型为 'value' 时发 $get,Java 服务成员全为方法)。 */
+        static Object field(Object svc, String name) {
+            for (Field f : svc.getClass().getFields()) {
+                if (Modifier.isStatic(f.getModifiers())) continue;
+                if (f.getName().equals(name)) {
+                    try {
+                        return f.get(svc);
+                    } catch (IllegalAccessException e) {
+                        throw new NodeBridgeError("service field read failed: " + svc.getClass().getSimpleName() + "." + name, e);
+                    }
+                }
+            }
+            return null;
+        }
+
         static Object invoke(Object svc, String method, List<Object> args) {
             // M7-7:java.util.Iterator 的 JS 迭代器协议适配 —— JS for...of 调 next() 期望
             // {done, value}(Java Iterator.next() 直接返回元素,协议不匹配)。hasNext/next
@@ -805,6 +1027,9 @@ public final class NodeWorkerJsHost implements JsHost {
             Thread.currentThread().interrupt();
             process.destroyForcibly();
         }
+        // M7-8:清理本宿主在跨 worker 路由表里的全局句柄条目(worker 进程已终止,句柄随之失效)
+        for (Long h : remoteObjects.keySet()) REMOTE_OBJ_OWNERS.remove(h);
+        FUNCTION_OWNERS.values().removeIf(owner -> owner == this);
         services.clear();
         bridges.clear();
         remoteObjects.clear();

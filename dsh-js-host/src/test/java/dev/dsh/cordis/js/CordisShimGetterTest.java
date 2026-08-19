@@ -162,10 +162,12 @@ class CordisShimGetterTest {
                 assertThat(svc).isNotNull().isInstanceOf(Map.class);
                 Map<String, Object> shell = map(svc);
                 assertThat(shell.get("name")).isEqualTo("shell");
-                // 原型方法经绑定循环成为 own 属性跨桥成 fn 句柄(getter 不求值、不跨桥)。
+                // M7-8 后服务值为 live 句柄(RemoteObject + Map 门面):原型方法经 invokeGet
+                // 读回 fn 句柄,getter 经 invokeGet 触发 worker 侧 accessor 直接读值。
                 assertThat(shell.get("resolve")).isInstanceOf(NodeRef.class);
-                // getter 不跨桥:config 是原型 accessor,序列化时不被求值、也不是 own 键。
-                assertThat(shell.get("config")).isNull();
+                // getter 现在跨桥:config 是原型 accessor,经 live 句柄 invokeGet 求值 → 配置对象。
+                assertThat(shell.get("config")).isInstanceOf(Map.class);
+                assertThat(map(shell.get("config"))).isNotEmpty();
             } finally {
                 root.fiber.dispose().join();
             }
