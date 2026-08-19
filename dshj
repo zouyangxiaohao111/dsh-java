@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# dshj — dsh-java 命令行入口(M6-4)。调用 dsh-host 的 Gradle run。
+# dshj — dsh-java 命令行入口(M6-4)。优先用 installDist(免 gradle,秒起);
+# dist 未构建时回退 Gradle run。
 #
 # 用法(与 dsh 启动器同形):
 #   ./dshj [--profile <name>] boot [appArgs...]
@@ -10,14 +11,19 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 把每个参数做 shell-safe 引号包裹,喂给 Gradle run 的 --args(Gradle 按引号感知拆分)。
-# 参数里的双引号/反斜杠先转义,避免破坏 --args 的拆分边界。
+DIST="$DIR/dsh-host/build/install/dsh-host/bin/dsh-host"
+if [ -x "$DIST" ]; then
+  # M9-2:installDist 直接运行(Java -cp,无 gradle 启动);以仓库根为 cwd(profiles/ 与 vendor/dsh 相对它)。
+  cd "$DIR"
+  exec "$DIST" "$@"
+fi
+
+# 回退:Gradle run。参数做 shell-safe 引号包裹(Gradle 按引号感知拆分)。
 ARGS=""
 for a in "$@"; do
   qa=$(printf '%s' "$a" | sed 's/\\/\\\\/g; s/"/\\"/g')
   ARGS="${ARGS} \"${qa}\""
 done
-# 去掉前导空格;空时显式给空串(Gradle run --args="" = 无参数)
 if [ -n "$ARGS" ]; then
   ARGS="${ARGS# }"
 fi

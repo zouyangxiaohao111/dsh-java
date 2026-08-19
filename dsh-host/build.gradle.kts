@@ -16,6 +16,10 @@ dependencies {
 
 application {
     mainClass = "dev.dsh.host.cli.DshCli"
+    // M9-2:installDist 直接运行(免 gradle 启动);UTF-8 强制输出(Windows 控制台默认 GBK)。
+    applicationDefaultJvmArgs = listOf(
+        "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", "-Dstderr.encoding=UTF-8",
+    )
 }
 
 tasks.named<JavaExec>("run") {
