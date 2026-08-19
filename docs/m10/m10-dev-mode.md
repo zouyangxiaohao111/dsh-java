@@ -87,6 +87,11 @@ clientBundle 包对它们的 require 一律 external → 运行时 `__ModuleLoad
   `dsh-client-ui-primitives`、`dsh-client-ui-slots`、`dsh-client-web-react`。
 - boot manifest 27 个 ui-* 行全部带 `url` + rev,`/plugins/<id>/client.js` 全部 200
   (无 missing bundle)。
+- 该边界已固化为自动回归:`DevClientBundleResolutionTest`(dsh-host)直接扫描 dev 浏览器
+  fetch 的全部 client bundle 产物,断言每个 static external require 都落在
+  `__ModuleLoader__` 可 resolve 集合(种子词 ∪ 图行 ∪ `/client` 规范化),且 5 个
+  clientLibrary 包都有 lib/index.js 无 lib/client.js(纯种子,无 bundle 行)。
+  反证:把 `ui-slots` 移出种子词 → 测试红("missed the module table" 路径)。
 
 ## 5. 边界(诚实记录)
 
@@ -106,7 +111,9 @@ clientBundle 包对它们的 require 一律 external → 运行时 `__ModuleLoad
 - `DshProfileReaderTest` 新增 2 例:dev patch 层仅在 dev boot 最后应用(last-write-wins,
   解 pin + group 透传)/ dev patch 层缺失是 no-op。
 - `DevPipelineTest` 3 例:prereqs 缺前置 → false + 提示 / 前置齐全 → true / 空管线 close 幂等。
-- 全量回归 335 测试(见提交)。
+- `DevClientBundleResolutionTest` 2 例:clientLibrary 纯库=平台种子(有 lib/index.js 无
+  lib/client.js)/ 全部 client bundle 的 static external require 都落在模块表可 resolve
+  集合(含 ui-slots 种子命中的 4 个 bundle)。全量回归 349 测试(见提交)。
 
 ## 7. 浏览器路径
 
