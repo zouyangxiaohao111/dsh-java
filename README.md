@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/JDK-25-0080FF?style=flat&logo=openjdk&logoColor=white" alt="JDK 25">
   <img src="https://img.shields.io/badge/构建-Gradle%209.7-02303A?style=flat&logo=gradle&logoColor=white" alt="Gradle 9.7">
-  <img src="https://img.shields.io/badge/测试-323%20全绿-2EA44F?style=flat" alt="323 tests green">
+  <img src="https://img.shields.io/badge/测试-329%20全绿-2EA44F?style=flat" alt="329 tests green">
   <img src="https://img.shields.io/badge/GraalJS-24.1-3DDC84?style=flat" alt="GraalJS">
   <img src="https://img.shields.io/badge/license-MIT-2EA44F?style=flat" alt="MIT License">
 </p>
@@ -73,7 +73,7 @@ dsh-java 用 JDK 25 把这套语义**忠实复刻成 Java**,再架一座 JS 桥,
 git clone https://github.com/zouyangxiaohao111/dsh-java.git
 cd dsh-java
 ./setup.sh           # ① 拉 vendor/dsh 子模块 → ② pnpm install(deps) → ③ build:lib:host(host lib)
-./gradlew test       # 323 测试全绿
+./gradlew test       # 329 测试全绿
 ./dshj web boot      # boot 默认 web profile → 打开 http://127.0.0.1:8080/
 ```
 
