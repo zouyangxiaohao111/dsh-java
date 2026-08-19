@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/JDK-25-0080FF?style=flat&logo=openjdk&logoColor=white" alt="JDK 25">
   <img src="https://img.shields.io/badge/构建-Gradle%209.7-02303A?style=flat&logo=gradle&logoColor=white" alt="Gradle 9.7">
-  <img src="https://img.shields.io/badge/测试-330%20全绿-2EA44F?style=flat" alt="330 tests green">
+  <img src="https://img.shields.io/badge/测试-335%20全绿-2EA44F?style=flat" alt="335 tests green">
   <img src="https://img.shields.io/badge/GraalJS-24.1-3DDC84?style=flat" alt="GraalJS">
   <img src="https://img.shields.io/badge/license-MIT-2EA44F?style=flat" alt="MIT License">
 </p>
@@ -73,7 +73,7 @@ dsh-java 用 JDK 25 把这套语义**忠实复刻成 Java**,再架一座 JS 桥,
 git clone https://github.com/zouyangxiaohao111/dsh-java.git
 cd dsh-java
 ./setup.sh           # ① 拉 vendor/dsh 子模块 → ② pnpm install(deps) → ③ build:lib:host(host lib)
-./gradlew test       # 330 测试全绿
+./gradlew test       # 335 测试全绿
 ./dshj web boot      # boot 真实 dsh web UI → 打开 http://127.0.0.1:3080/
 ```
 
@@ -172,6 +172,7 @@ root.emit("app/ready", "started");       // 触发 JS
 | **M7-8** | provide 通道服务句柄化(服务值=live 句柄,方法/getter 跨 worker 可调)+ ctx.fiber/ctx.loader/ctx.baseUrl;整树复核:**73/78 注册**(最后 6 行 hmr/session-persistence/permission/goal-round/plan-mode/agent-loop 解钉,只剩 typert 客户端专属) | ✅ |
 | **M8-1** | 真实 dsh web UI(webserver+api-gateway+前端经核心 serve;首页返回真实 DeepSeek Harness shell + 99 插件经桥;已知边界:/api 跨 worker 路由死锁待解) | ✅ |
 | **M8-2** | 5 low gap 修复(isIteratorLike 收窄/线程池/JsIterable 守卫/Reflect 守卫/tools 语义证据) | ✅ |
+| **M9-1** | web 插件组共享 worker(进程组:webserver/modules/connection/api-gateway/ui-* 同一 Node 进程)——**跨 worker 路由死锁解除**(/plugins client.js 从死锁 → HTTP 200 0.0037s)+ Registry.delete CME 修复 | ✅ |
 
 ```
 Java 核心(dev.dsh.cordis)      ← 唯一不可替换
