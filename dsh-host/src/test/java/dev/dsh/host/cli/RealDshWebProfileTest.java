@@ -1,6 +1,8 @@
 package dev.dsh.host.cli;
 
 import dev.dsh.cordis.js.HostKind;
+import dev.dsh.cordis.loader.DshProfileReader;
+import dev.dsh.cordis.loader.Entry;
 import dev.dsh.cordis.loader.LoadedPlugin;
 import org.junit.jupiter.api.Test;
 
@@ -9,6 +11,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -72,5 +76,35 @@ class RealDshWebProfileTest {
             assertThat(svc).isInstanceOf(java.util.Map.class);
             assertThat(map(svc).get("name")).isEqualTo("systemPrompt");
         }
+    }
+
+    /**
+     * M10-1:真实 web profile 的 dev patch 层组合(不 boot,快)。dev boot 时
+     * {@code cordis.patch.dev.yml} 在用户层之后应用 —— client-hmr 解 pin + 并入 web 组;
+     * 非 dev boot 保持用户层钉住(不产出 client-hmr)。
+     */
+    @Test
+    void devPatchLayerEnablesClientHmrForRealWebProfile() throws Exception {
+        Path repo = Path.of(System.getProperty("user.dir"), "..").toAbsolutePath().normalize();
+        Path profileDir = repo.resolve("profiles/web");
+        Path installAnchor = repo.resolve("vendor/dsh/package.json");
+        assumeTrue(Files.isRegularFile(profileDir.resolve("package.json")),
+                "profiles/web is not the M8 dsh profile (package.json + dsh.profile.bundles)");
+        assumeTrue(Files.isRegularFile(profileDir.resolve(DshProfileReader.DEV_PATCH_FILENAME)),
+                "profiles/web/cordis.patch.dev.yml missing");
+
+        DshProfileReader reader = new DshProfileReader();
+        // 非 dev:client-hmr 被用户层钉住(disabled: true)→ 不产出
+        List<Entry> normal = reader.load(profileDir, installAnchor, false);
+        Map<String, Entry> normalById = normal.stream().collect(Collectors.toMap(Entry::name, e -> e));
+        assertThat(normalById).doesNotContainKey("client-hmr");
+
+        // dev:client-hmr 解 pin(产出)+ group: web(与 webserver/modules 同 worker)
+        List<Entry> dev = reader.load(profileDir, installAnchor, true);
+        Map<String, Entry> devById = dev.stream().collect(Collectors.toMap(Entry::name, e -> e));
+        assertThat(devById).containsKey("client-hmr");
+        Entry hmr = devById.get("client-hmr");
+        assertThat(hmr.disabled()).isNull();
+        assertThat(hmr.group()).isEqualTo("web");
     }
 }

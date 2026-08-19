@@ -192,6 +192,61 @@ class DshProfileReaderTest {
     }
 
     @Test
+    void devPatchLayerAppliedLastOnlyWhenDev() throws Exception {
+        // M10-1:dev 额外 patch 层(cordis.patch.dev.yml)仅在 dev boot 时于用户层之后应用,
+        // last-write-wins。用户层钉住的行(如 client-hmr disabled)被 dev 层解 pin + 并组。
+        writeInstall();
+        writeBundle(home().resolve("vendor/dsh/node_modules"), "@test/bundle-dev", """
+                - insert:
+                    - id: client-hmr
+                      name: '@test/client-hmr'
+                    - id: plain-row
+                      name: '@test/plain-row'
+                """);
+        Path profile = home().resolve("profiles/test");
+        writeProfile(profile, "[\"@test/bundle-dev\"]", """
+                - id: client-hmr
+                  disabled: true
+                """);
+        // dev 层:解 pin + 进 web 组(镜像真实 web profile 的 dev patch)
+        Files.writeString(profile.resolve(DshProfileReader.DEV_PATCH_FILENAME), """
+                - id: client-hmr
+                  disabled: false
+                  group: web
+                """);
+
+        // 非 dev:dev 层不加载 → client-hmr 保持用户层禁用(行剔除)
+        List<Entry> normal = new DshProfileReader().load(profile, installAnchor());
+        assertThat(normal).extracting(Entry::name).containsExactly("plain-row");
+
+        // dev:dev 层最后应用 → client-hmr 解 pin(行保留,位置仍在 bundle 层原始序)+ group: web
+        List<Entry> dev = new DshProfileReader().load(profile, installAnchor(), true);
+        assertThat(dev).extracting(Entry::name).containsExactly("client-hmr", "plain-row");
+        Entry hmr = dev.stream().filter(e -> "client-hmr".equals(e.name())).findFirst().orElseThrow();
+        assertThat(hmr.disabled()).isNull();
+        assertThat(hmr.group()).isEqualTo("web");
+        assertThat(dev.stream().filter(e -> "plain-row".equals(e.name())).findFirst().orElseThrow().group())
+                .isNull();
+    }
+
+    @Test
+    void devPatchLayerAbsentIsNoOp() throws Exception {
+        // 没有 cordis.patch.dev.yml → dev boot 与非 dev 完全一致(诚实:dev 层是可选的)
+        writeInstall();
+        writeBundle(home().resolve("vendor/dsh/node_modules"), "@test/bundle-dev2", """
+                - insert:
+                    - id: row-a
+                      name: '@test/row-a'
+                """);
+        Path profile = home().resolve("profiles/test");
+        writeProfile(profile, "[\"@test/bundle-dev2\"]", null);
+
+        List<Entry> normal = new DshProfileReader().load(profile, installAnchor());
+        List<Entry> dev = new DshProfileReader().load(profile, installAnchor(), true);
+        assertThat(dev).containsExactlyElementsOf(normal);
+    }
+
+    @Test
     void configJsExpressionPassedThroughAsString() throws Exception {
         writeInstall();
         writeBundle(home().resolve("vendor/dsh/node_modules"), "@test/bundle-js", """

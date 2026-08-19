@@ -98,6 +98,7 @@ cd dsh-java
 ```sh
 ./dshj --help                            # 帮助(web/headless/cli 任意 profile)
 ./dshj web boot                          # boot 真实 dsh web UI(dsh-base+dsh-web-app),默认 :3080
+./dshj web --dev                         # dev 模式:dev patch 层 + tsdown/vite watcher(客户端插件热换)
 ./dshj web boot --port 8080              # 覆盖端口
 ./dshj --profile headless boot           # 指定 profile
 ./dshj plugin --profile web add <spec>   # 插件 add:jar:<maven/路径> 从 MavenLocal/Central 装;
@@ -118,6 +119,14 @@ cd dsh-java
   (route handler 与 node:http req/res 跨 worker 边界)—— 首页真实 UI + 花名册可 serve,客户端
   插件 bundle 与 API 传输需共享 worker seam(见 `docs/m8-1/` §5)。深度边界(Code Mode worker-thread
   沙箱、client HMR dev watcher)经 `profiles/web/cordis.patch.yml` 用户层钉住并记录。
+  **M9-1 解死锁**:web 运行时组(webserver/web-runtime/modules/connection/api-gateway + 全部
+  ui-*)共享一个 NodeWorkerJsHost(同 worker,entry 加 `group: web`,配置驱动)—— route handler
+  与 node:http req/res 本地直传,/plugins 与 /api 不再冻结(见 `docs/m9-1/`)。**M10-1 dev 模式**:
+  `./dshj web --dev` 把 dev 差异全部收进 `profiles/web/cordis.patch.dev.yml`(解 pin
+  client-hmr + 并入 web 组),再起两个通用 watcher 子进程 —— tsdown watch(dev-web,重建
+  client bundle)+ vite build --watch(前端壳 dist);浏览器打开 `http://127.0.0.1:3080/`,改
+  客户端插件源码 → bundle 重建 → host stat-poll 检测 rev 变更 → `/plugins/events` SSE 广播
+  `rebuilt` 帧 → 浏览器热换插件(实测链路见 `docs/m10/m10-dev-mode.md`)。
 - 非 webServer profile(如 headless/任意 cordis.yml profile)仍起 M6-5a HTTP 状态页
   (`http://127.0.0.1:8080/`,`--port` 可覆盖):harness 名 + 已加载插件列表(Java/Node/
   GraalJS 宿主标签)+ 桥基址 + 启动日志。
@@ -173,6 +182,7 @@ root.emit("app/ready", "started");       // 触发 JS
 | **M8-1** | 真实 dsh web UI(webserver+api-gateway+前端经核心 serve;首页返回真实 DeepSeek Harness shell + 99 插件经桥;已知边界:/api 跨 worker 路由死锁待解) | ✅ |
 | **M8-2** | 5 low gap 修复(isIteratorLike 收窄/线程池/JsIterable 守卫/Reflect 守卫/tools 语义证据) | ✅ |
 | **M9-1** | web 插件组共享 worker(进程组:webserver/modules/connection/api-gateway/ui-* 同一 Node 进程)——**跨 worker 路由死锁解除**(/plugins client.js 从死锁 → HTTP 200 0.0037s)+ Registry.delete CME 修复 | ✅ |
+| **M10-1** | **dev 模式**:`./dshj web --dev` — dev patch 层(`cordis.patch.dev.yml`,解 pin client-hmr 并入 web 组)+ 双 watcher(tsdown watch 重建 client bundle + vite build --watch 重建前端壳 dist)+ host stat-poll rev → SSE `/plugins/events` `rebuilt` 帧 → 浏览器热换插件(实测 HMR 链路)+ 纯库 clientLibrary 种子解析确认(天然解,无需 serve 端修) | ✅ |
 
 ```
 Java 核心(dev.dsh.cordis)      ← 唯一不可替换

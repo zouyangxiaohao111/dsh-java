@@ -2,6 +2,7 @@ package dev.dsh.host.cli;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -26,6 +27,7 @@ public final class DshCli {
             Usage:
               dshj [--profile <name>] boot [appArgs...]    boot a profile (default profile: web)
               dshj web|headless|cli [boot] [appArgs...]     profile alias (= --profile <name>)
+              dshj web --dev [appArgs...]                   dev mode: dev patch layer + tsdown/vite watchers (M10-1)
               dshj plugin --profile <name> add <spec>       add a plugin to a profile (M6-7)
               dshj --help | -h                              show this help
               dshj --version | -V                           show version
@@ -34,6 +36,13 @@ public final class DshCli {
               web, headless, cli - shipped aliases; any name under profiles/<name>/cordis.yml
               works via --profile <name> (or $DSH_HOME/profiles/<name> when DSH_HOME is set).
               dshj --profile web boot   is the same as:  dshj web boot
+
+            Dev mode (--dev, launcher flag — not passed to the app):
+              boots the profile with profiles/<name>/cordis.patch.dev.yml applied on top of the
+              user layer (web profile: re-enables the client-hmr reload chain), then starts the
+              tsdown watch (client plugin bundles) and vite build --watch (frontend shell dist).
+              Browser: http://127.0.0.1:3080/ — edit a client plugin source → bundle rebuild →
+              SSE /plugins/events → browser hot-swaps the plugin.
 
             App arguments after the launcher flags reach the booted profile:
               dshj --profile headless "run the tests"
@@ -89,7 +98,7 @@ public final class DshCli {
                 out.println("dshj " + VERSION);
                 yield 0;
             }
-            case CliInvocation.Boot b -> runBoot(b.profile(), b.appArgs(), out, err);
+            case CliInvocation.Boot b -> runBoot(b.profile(), b.appArgs(), b.dev(), out, err);
             case CliInvocation.Plugin p -> PluginCommand.run(p.profile(), p.args(), out, err);
         };
     }
@@ -103,12 +112,19 @@ public final class DshCli {
      *  <p>M8 起:webServer 服务存在(真实 dsh web profile,经 dsh 插件 webserver 宿主)
      *  → 不启动状态页(避免 shadow 前端),打印 dsh webserver 的真实 URL —— 浏览器打开的
      *  是真实 dsh agent UI(前端 dist 由 web-runtime 的 frontend-static fallback 提供)。 */
-    private static int runBoot(String profile, List<String> appArgs, PrintStream out, PrintStream err) {
+    private static int runBoot(String profile, List<String> appArgs, boolean dev, PrintStream out, PrintStream err) {
         ProfileBoot boot = new ProfileBoot();
         try {
-            ProfileBoot.Handle handle = boot.bootOnce(profile, appArgs, out);
+            ProfileBoot.Handle handle = dev
+                    ? boot.bootOnceDev(profile, appArgs, out)
+                    : boot.bootOnce(profile, appArgs, out);
             out.println();
             out.println("dshj: profile '" + profile + "' is running on the Java harness. Ctrl+C to stop.");
+            if (dev) {
+                out.println("dshj: dev mode ON (--dev): dev patch layer applied"
+                        + (profile.equals("web") ? " + tsdown/vite watchers started" : "")
+                        + ".");
+            }
             if (!appArgs.isEmpty()) {
                 out.println("dshj: app args passed to the profile: " + appArgs);
             }
@@ -133,15 +149,35 @@ public final class DshCli {
                 }
             }
             WebStatusServer server = srv;
+            // M10-1:dev 模式(web profile)起 tsdown/vite watcher 子进程 —— 通用进程机制,
+            // 关宿主时一并回收。前置缺 → 诚实降级(打印提示,仍可访问静态 UI)。
+            DevPipeline devPipeline = null;
+            if (dev && "web".equals(profile)) {
+                Path repoRoot = ProfileBoot.defaultRepoRoot();
+                if (DevPipeline.prereqs(repoRoot, out)) {
+                    devPipeline = new DevPipeline(repoRoot);
+                    devPipeline.start();
+                    out.println("dshj: [dev] tsdown watch (client bundles) + vite build --watch"
+                            + " (frontend shell dist) started — edit sources to see HMR/refresh.");
+                } else {
+                    out.println("dshj: [dev] watcher prerequisites missing — dev mode degraded"
+                            + " (host serves static dist, no HMR chain).");
+                }
+            }
+            DevPipeline pipeline = devPipeline;
             CountDownLatch latch = new CountDownLatch(1);
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try {
-                    if (server != null) server.close();
+                    if (pipeline != null) pipeline.close();
                 } finally {
                     try {
-                        handle.close();
+                        if (server != null) server.close();
                     } finally {
-                        latch.countDown();
+                        try {
+                            handle.close();
+                        } finally {
+                            latch.countDown();
+                        }
                     }
                 }
             }, "dshj-shutdown"));

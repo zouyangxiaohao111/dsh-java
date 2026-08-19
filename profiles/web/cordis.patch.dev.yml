@@ -1,0 +1,15 @@
+# dshj web profile DEV patch layer (M10-1) — applied AFTER the user layer
+# (profiles/web/cordis.patch.yml) ONLY when booting with `./dshj web --dev`.
+#
+# Dev 模式的全部差异都是"改 yml":这一层把用户层钉住的 dev 相关行解 pin,核心/桥零特判。
+# 换 dev 行为 = 改这一层;非 dev boot 完全不受影响。
+#
+# 解 pin client-hmr:用户层因为"Java 宿主 boot 无 dev watcher,链恒 idle"而钉住它;
+# --dev 会起 tsdown watch(dev-web)重写 lib/client.js 并把它并入 web 组(与 webserver/
+# modules 同 worker —— M9-1 已证同组共享 worker 消除跨 worker 路由死锁;client-hmr 的
+# /plugins/events SSE 路由经 webServer.register 注册,必须与 webserver 同组)。之后
+# client-hmr 的 stat-poll 就能观察到 bundle 变更并广播 rebuilt 帧,浏览器热换插件。
+- id: client-hmr
+  name: '@deepseek-ai/dsh-client-hmr'
+  disabled: false
+  group: web

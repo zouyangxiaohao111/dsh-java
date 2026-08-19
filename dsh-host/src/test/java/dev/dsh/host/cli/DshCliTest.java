@@ -101,6 +101,49 @@ class DshCliTest {
         assertThat(inv).isEqualTo(new CliInvocation.Boot("web", List.of()));
     }
 
+    // ---- M10-1 dev 模式 --dev(启动器 flag,不传给 app)----
+
+    @Test
+    void parseWebAliasDevFlag() {
+        // ./dshj web --dev:--dev 是启动器 flag,被消费;appArgs 为空
+        CliInvocation inv = parse(args("web", "--dev"));
+        assertThat(inv).isEqualTo(new CliInvocation.Boot("web", List.of(), true));
+    }
+
+    @Test
+    void parseProfileBootDevFlag() {
+        CliInvocation inv = parse(args("--profile", "web", "--dev", "boot"));
+        assertThat(inv).isEqualTo(new CliInvocation.Boot("web", List.of(), true));
+    }
+
+    @Test
+    void parseDevFlagEqualsBool() {
+        assertThat(parse(args("web", "--dev=true"))).isEqualTo(new CliInvocation.Boot("web", List.of(), true));
+        assertThat(parse(args("web", "--dev=false"))).isEqualTo(new CliInvocation.Boot("web", List.of(), false));
+    }
+
+    @Test
+    void parseDevKeepsAppArgs() {
+        // --dev 被启动器消费,之后的 app 参数原样到达 profile
+        CliInvocation inv = parse(args("web", "--dev", "--port", "4000"));
+        assertThat(inv).isEqualTo(new CliInvocation.Boot("web", List.of("--port", "4000"), true));
+    }
+
+    @Test
+    void parseDevInvalidValueRejected() {
+        assertThatThrownBy(() -> parse(args("web", "--dev=yes")))
+                .isInstanceOf(CliArgs.UsageError.class)
+                .hasMessageContaining("--dev");
+    }
+
+    @Test
+    void parseWithoutDevStaysFalse() {
+        // 既有形状不变:无 --dev → dev=false
+        assertThat(parse(args("web"))).isEqualTo(new CliInvocation.Boot("web", List.of(), false));
+        assertThat(parse(args("--profile", "tui", "boot", "arg"))).isEqualTo(
+                new CliInvocation.Boot("tui", List.of("arg"), false));
+    }
+
     @Test
     void parsePluginAdd() {
         CliInvocation inv = parse(args("plugin", "--profile", "web", "add", "@koishijs/plugin-echo"));

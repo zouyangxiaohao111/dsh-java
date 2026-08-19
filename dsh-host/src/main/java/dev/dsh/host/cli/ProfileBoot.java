@@ -125,6 +125,11 @@ public final class ProfileBoot {
         return bootOnce(profile, List.of(), out);
     }
 
+    /** dev 变体:{@code --dev} boot(应用 profile 的 dev 额外 patch 层)。 */
+    public Handle bootOnceDev(String profile, List<String> appArgs, PrintStream out) {
+        return bootOnce(profile, appArgs, true, out);
+    }
+
     /**
      * 加载一个 profile 的插件树,把启动器内参数作为 dsh {@code cmdlineArgs} 服务提供
      * (镜像真实 dsh 启动器:launcher 只解析自己的 flag,之后原样交给树;app 插件经
@@ -137,6 +142,22 @@ public final class ProfileBoot {
      * @throws BootException profile 目录/配置不存在
      */
     public Handle bootOnce(String profile, List<String> appArgs, PrintStream out) {
+        return bootOnce(profile, appArgs, false, out);
+    }
+
+    /**
+     * 带 dev 标志的 boot:dev 模式在 dsh profile 组合时追加 {@code cordis.patch.dev.yml} 层
+     * (解 pin dev 相关行,如 client-hmr)。Java harness yml 路径没有 patch 层概念,dev 标志
+     * 仅作用于 dsh profile 路径。
+     *
+     * @param profile profile 名(web/headless/cli 或任意 {@code profiles/<name>})
+     * @param appArgs boot 之后的内参数(原样,不经启动器解析)
+     * @param dev     {@code true} 时应用 dev 额外 patch 层
+     * @param out     进度输出流
+     * @return boot 句柄
+     * @throws BootException profile 目录/配置不存在
+     */
+    public Handle bootOnce(String profile, List<String> appArgs, boolean dev, PrintStream out) {
         if (profile == null || profile.isBlank()) {
             throw new BootException("--profile needs a name");
         }
@@ -186,7 +207,7 @@ public final class ProfileBoot {
                 // M6-6 dsh profile:读 manifest → 组合 bundle patch 层 → entries → loader 加载。
                 // bundle 第一 anchor = vendor/dsh 安装(package.json);缺则仅 profile 自身。
                 Path installAnchor = repoRoot.resolve("vendor/dsh/package.json");
-                composedEntries = new DshProfileReader().load(profileDir, installAnchor);
+                composedEntries = new DshProfileReader().load(profileDir, installAnchor, dev);
                 root.loader.setEntries(loaderEntryObjects(composedEntries));
                 loaded = loader.loadEntries(composedEntries, profileDir);
                 logOut.println("dshj: profile '" + profile + "' booted (dsh profile " + profileDir + "):");

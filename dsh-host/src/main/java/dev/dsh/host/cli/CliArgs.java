@@ -10,6 +10,8 @@ import java.util.List;
  * <ul>
  *   <li>{@code --profile <name>} / {@code -p <name>} / {@code --profile=<name>} — 目标 profile
  *       (boot 缺省 {@code web},{@code plugin} 必填);</li>
+ *   <li>{@code --dev} / {@code --dev=<bool>} — dev 模式(启动器消费,不传给 app):boot 应用
+ *       profile 的 dev 额外 patch 层,web profile 另起 tsdown/vite watcher;</li>
  *   <li>{@code --help}/{-h}、{@code --version}/{-V} — 帮助/版本(先于模式判定);</li>
  *   <li>首个位置参数决定模式:{@code boot} / {@code plugin} / profile 别名
  *       ({@code web}、{@code headless}、{@code cli})/ 其它;</li>
@@ -47,6 +49,7 @@ public final class CliArgs {
         List<String> positional = new ArrayList<>();
         boolean help = false;
         boolean version = false;
+        boolean dev = false;
         for (int i = 0; i < argv.length; i++) {
             String a = argv[i];
             if (a.equals("--help") || a.equals("-h")) {
@@ -58,6 +61,14 @@ public final class CliArgs {
                 profileOpt.add(argv[++i]);
             } else if (a.startsWith("--profile=")) {
                 profileOpt.add(a.substring("--profile=".length()));
+            } else if (a.equals("--dev")) {
+                dev = true;
+            } else if (a.startsWith("--dev=")) {
+                String v = a.substring("--dev=".length()).trim();
+                if (!v.equalsIgnoreCase("true") && !v.equalsIgnoreCase("false")) {
+                    throw new UsageError("--dev needs true or false");
+                }
+                dev = Boolean.parseBoolean(v);
             } else {
                 positional.add(a);
             }
@@ -75,7 +86,7 @@ public final class CliArgs {
         if (version) return new CliInvocation.Version();
 
         if (positional.isEmpty()) {
-            if (profile != null) return new CliInvocation.Boot(profile, List.of());
+            if (profile != null) return new CliInvocation.Boot(profile, List.of(), dev);
             return new CliInvocation.Help();
         }
         String first = positional.get(0);
@@ -83,7 +94,7 @@ public final class CliArgs {
         switch (first) {
             case "boot" -> {
                 String p = profile != null ? profile : "web";
-                return new CliInvocation.Boot(p, rest);
+                return new CliInvocation.Boot(p, rest, dev);
             }
             case "plugin" -> {
                 if (profile == null) throw new UsageError("plugin needs --profile <name>");
@@ -95,12 +106,12 @@ public final class CliArgs {
                 }
                 List<String> app = rest;
                 if (!app.isEmpty() && app.get(0).equals("boot")) app = app.subList(1, app.size());
-                return new CliInvocation.Boot(first, app);
+                return new CliInvocation.Boot(first, app, dev);
             }
             default -> {
                 if (profile != null) {
                     // dsh 兼容:--profile <name> 后无子命令 → 其余参数交给 booted app
-                    return new CliInvocation.Boot(profile, positional);
+                    return new CliInvocation.Boot(profile, positional, dev);
                 }
                 throw new UsageError("unknown command '" + first + "'");
             }

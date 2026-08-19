@@ -104,6 +104,10 @@ public final class DshProfileReader {
     /** profile 目录里的用户 patch 层文件名。 */
     public static final String PROFILE_PATCH_FILENAME = "cordis.patch.yml";
 
+    /** dev 模式额外 patch 层文件名:仅 {@code --dev} boot 时在用户层之后应用(镜像真实 dsh
+     *  的 {@code --patch} 追加层;dev 层通常钉住解 pin,如启用 client-hmr 的 HMR 链)。 */
+    public static final String DEV_PATCH_FILENAME = "cordis.patch.dev.yml";
+
     /** 一个已解析的 bundle 层。 */
     public record Layer(String packageName, Path packageDir, Path patchPath, List<JsonNode> patches) {
     }
@@ -145,7 +149,8 @@ public final class DshProfileReader {
 
     /**
      * 读一个 dsh profile:解析 manifest → 按 {@code dsh.profile.bundles} 顺序解析每个
-     * bundle 的 patch 层 → 加用户自己的 {@code cordis.patch.yml} 层。
+     * bundle 的 patch 层 → 加用户自己的 {@code cordis.patch.yml} 层(dev 模式再加
+     * {@code cordis.patch.dev.yml} 层,最后应用)。
      *
      * @param profileDir     profile 目录(绝对)
      * @param installAnchor  dsh 安装的 package.json 路径(两 anchor 解析的第一个;文件不存在时跳过)
@@ -153,6 +158,21 @@ public final class DshProfileReader {
      * @throws IOException profile 缺失 / manifest 无效 / bundle 无法解析或未声明 dsh.bundle
      */
     public Profile read(Path profileDir, Path installAnchor) throws IOException {
+        return read(profileDir, installAnchor, false);
+    }
+
+    /**
+     * dev 变体:在用户层之后追加 {@code cordis.patch.dev.yml} 层(存在才追加;last-write-wins,
+     * 与 {@code --patch} 追加层同语义)。dev 层把用户层钉住的 dev 相关行解 pin
+     * (如 {@code client-hmr})—— 换 yml 即换 dev 行为,核心零特判。
+     *
+     * @param profileDir     profile 目录(绝对)
+     * @param installAnchor  dsh 安装的 package.json 路径(两 anchor 解析的第一个;文件不存在时跳过)
+     * @param dev            {@code true} 时加载 dev 额外 patch 层
+     * @return 加载的 profile(dev 层已并入用户 patch 列表)
+     * @throws IOException profile 缺失 / manifest 无效 / bundle 无法解析或未声明 dsh.bundle
+     */
+    public Profile read(Path profileDir, Path installAnchor, boolean dev) throws IOException {
         Path dir = profileDir.toAbsolutePath().normalize();
         Path manifestPath = dir.resolve("package.json");
         if (!Files.isRegularFile(manifestPath)) {
@@ -177,8 +197,13 @@ public final class DshProfileReader {
             }
         }
         Path userPatch = dir.resolve(PROFILE_PATCH_FILENAME);
-        List<JsonNode> userPatches = Files.isRegularFile(userPatch) ? readPatchList(userPatch) : List.of();
-        return new Profile(dir.getFileName().toString(), dir, List.copyOf(layers), userPatch, userPatches);
+        List<JsonNode> userPatches = new ArrayList<>();
+        if (Files.isRegularFile(userPatch)) userPatches.addAll(readPatchList(userPatch));
+        if (dev) {
+            Path devPatch = dir.resolve(DEV_PATCH_FILENAME);
+            if (Files.isRegularFile(devPatch)) userPatches.addAll(readPatchList(devPatch));
+        }
+        return new Profile(dir.getFileName().toString(), dir, List.copyOf(layers), userPatch, List.copyOf(userPatches));
     }
 
     /**
@@ -228,6 +253,11 @@ public final class DshProfileReader {
     /** 一次读 + 组合:返回可被 {@link PluginLoaderService#loadEntries} 消费的 Entry 列表。 */
     public List<Entry> load(Path profileDir, Path installAnchor) throws IOException {
         return composeEntries(read(profileDir, installAnchor));
+    }
+
+    /** dev 变体:一次读(含 dev 额外 patch 层)+ 组合,供 {@code --dev} boot 消费。 */
+    public List<Entry> load(Path profileDir, Path installAnchor, boolean dev) throws IOException {
+        return composeEntries(read(profileDir, installAnchor, dev));
     }
 
     /**
