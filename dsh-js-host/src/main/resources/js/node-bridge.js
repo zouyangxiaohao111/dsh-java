@@ -595,6 +595,34 @@ function makeLogger(ctxId, name) {
   return log
 }
 
+// ---- ctx.fiber live 代理(M7-8 B:agent-loop 同形)----
+// worker 侧 ctx.fiber 是可调 live 代理:assertActive() / state 经 ctxCall 桥到 Java 核心的
+// fiber 状态(不再是非可枚举的静态 { state:'active' } 桩)。parent 保持自终止链
+// (fiber.parent.fiber === fiber),使 hasLifecycleAncestor 的 identity 比较首次即返回 false。
+// 数值 state 与 shim 的 FiberState 对应(PENDING=0, LOADING=1, ACTIVE=2, FAILED=3,
+// DISPOSED=4, UNLOADING=5)—— 真实 dsh 插件读数值(ctx.fiber.state === FiberState.ACTIVE)。
+function makeFiberProxy(ctxId) {
+  const invoke = (method, args) =>
+    syncBridgeCall('ctxCall', { ctx: ctxId, method, args: (args || []).map(x => serializeValue(x)) })
+  const callable = (...args) => invoke('fiberCall', args)
+  const parentChain = {}
+  const proxy = new Proxy(callable, {
+    get(target, prop, receiver) {
+      if (prop === 'then') return undefined
+      if (prop === 'parent') return parentChain
+      if (prop === 'assertActive') {
+        // 存活不抛、返回 undefined(Java 侧 assertActive 为 void)。dispose 后 Java 抛
+        // INACTIVE_EFFECT → 桥 error → 此处抛 Error,调用方可 catch(cordis 语义)。
+        return function () { invoke('fiberAssertActive', []); return undefined }
+      }
+      if (prop === 'state') return invoke('fiberState', [])
+      return undefined
+    },
+  })
+  parentChain.fiber = proxy
+  return proxy
+}
+
 // ---- ctx shim(与 ctx.js 同一契约面)----
 function makeCtx(ctxId) {
   // logger 既可当函数调用(ctx.logger('agents') → 命名 logger),也带方法属性
@@ -606,12 +634,11 @@ function makeCtx(ctxId) {
   logger.info = defaultLogger.info
   logger.warn = defaultLogger.warn
   logger.debug = defaultLogger.debug
-  // 最小 fiber seam:AgentRegistry.hasLifecycleAncestor 做 identity 比较(fiber === candidate),
-  // 跨桥无法成立;提供终止链(fiber.parent.fiber === fiber)使其在首次比较即返回 false。
-  // 真实 fiber 状态/父子关系跨桥 → NEEDS。非可枚举:该链自引用,若被 serializeValue
-  // (Service 提供 self 时遍历 self.ctx 的 own enumerable keys)扫到会报循环引用。
-  const rootFiber = { state: 'active' }
-  rootFiber.parent = { fiber: rootFiber }
+  // M7-8 B:ctx.fiber 是可调 live 代理(assertActive/state 经桥到 Java 核心);parent 终止链
+  // (fiber.parent.fiber === fiber)使 AgentRegistry.hasLifecycleAncestor 的 identity 比较
+  // 首次即返回 false。非可枚举:代理是函数,若被 serializeValue(Service 提供 self 时遍历
+  // self.ctx 的 own enumerable keys)扫到会报循环引用或破坏句柄 id 分配。
+  const fiberProxy = makeFiberProxy(ctxId)
   const ctx = {
     on: (name, listener, opts) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'on', args: [serializeValue(listener), name, opts || {}] }),
     once: (name, listener, opts) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'once', args: [serializeValue(listener), name, opts || {}] }),
@@ -715,8 +742,17 @@ function makeCtx(ctxId) {
     i18n: { define: () => {} },
     bots: { find: () => null },
   }
-  // fiber seam 非可枚举(自引用链不能被 serializeValue 扫到);ctx.fiber 经 Proxy get 仍可达。
-  Object.defineProperty(ctx, 'fiber', { value: rootFiber, enumerable: false, writable: true, configurable: true })
+  // ctx.fiber live 代理(非可枚举,serializeValue 扫不到;经 ctx Proxy get 仍可达)。
+  Object.defineProperty(ctx, 'fiber', { value: fiberProxy, enumerable: false, writable: true, configurable: true })
+  // ctx.baseUrl 经桥到 Java 核心 root.baseUrl(hmr 的 new URL(config.base||'.', ctx.baseUrl)
+  // 需要;未设置 → undefined)。非可枚举:进 target 使 Proxy get 走 Reflect.get,不经 ctx.get()。
+  Object.defineProperty(ctx, 'baseUrl', {
+    get: () => {
+      const v = syncBridgeCall('ctxCall', { ctx: ctxId, method: 'baseUrl', args: [] })
+      return v === undefined ? undefined : v
+    },
+    enumerable: false, configurable: true,
+  })
   // cordis 框架方法(M7-6):ctx.mixin(source, keys|renamed) 把服务成员直接暴露到 ctx
   // (reflect.ts:364-390)。Java Context.mixin 已有(accessor 转发),这里暴露给 shim。
   // keys 可为字符串数组(同键暴露)或映射(重命名);原样过桥,Java 侧按 List/Map 分发。

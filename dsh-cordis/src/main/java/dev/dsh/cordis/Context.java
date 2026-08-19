@@ -30,6 +30,10 @@ public final class Context {
     public final Registry registry;
     public final Events events;
     public final LoggerService logger;
+    /** Built-in loader service ({@code ctx.loader}, @cordisjs/loader surface).
+     *  The Java core owns loading/hot-reload; this is the contract facade hmr and
+     *  friends read (see {@link LoaderService}). */
+    public final LoaderService loader;
 
     /** Tracing shadow (JS symbols.shadow); M1 保留字段,不实现完整追踪。 */
     Context shadow;
@@ -50,6 +54,7 @@ public final class Context {
         this.registry = new Registry(this);
         this.events = new Events(this);
         this.logger = new LoggerService(this);
+        this.loader = new LoaderService(this);
         this.fiber.clearRootEffects();   // context.ts:82 — built-in service effects survive root dispose
     }
 
@@ -95,6 +100,7 @@ public final class Context {
         this.registry = parent.registry;  // shared
         this.events = parent.events;      // shared
         this.logger = parent.logger;      // shared
+        this.loader = parent.loader;      // shared
         this.fiber = parent.fiber;        // replaced when plugin creates child (see Registry.plugin)
         this.filter = parent.filter;
         if (meta != null) {

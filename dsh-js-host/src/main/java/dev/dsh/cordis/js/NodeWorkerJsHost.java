@@ -891,13 +891,23 @@ public final class NodeWorkerJsHost implements JsHost {
     // ---- ServiceInvoker(仿 ServiceProxy 的反射调用,不依赖 GraalJS context)----
 
     private static final class ServiceInvoker {
-        /** M7-8:Java 服务成员描述符(供 JS 侧服务代理分辨方法/getter)。Java 服务所有
-         *  public 方法都可调用 → 全标 'function';proxy 的 get trap 对方法返回可调用。 */
+        /** M7-8:Java 服务成员描述符(供 JS 侧服务代理分辨方法/getter)。public 方法全标
+         *  'function'(可调用);public 实例字段标 'value' —— proxy 的 get trap 对 value 成员发
+         *  {@code $get} 直接读值。M7-8 B+C:这使 {@code ctx.loader.internal.version} 读链
+         *  (LoaderInternal 的 version 字段)跨桥读到真值,而不是被误当方法。方法名优先:
+         *  同名 public 字段不覆盖方法(JS 侧对该名仍得可调用),避免字段遮蔽方法调用。 */
         static Object members(Object svc) {
             List<Map<String, Object>> out = new ArrayList<>();
+            java.util.Set<String> methods = new java.util.LinkedHashSet<>();
             for (Method m : svc.getClass().getMethods()) {
                 if (m.getDeclaringClass() == Object.class) continue;
+                methods.add(m.getName());
                 out.add(Map.of("name", m.getName(), "type", "function"));
+            }
+            for (Field f : svc.getClass().getFields()) {
+                if (Modifier.isStatic(f.getModifiers())) continue;
+                if (methods.contains(f.getName())) continue;   // 方法优先,不遮蔽
+                out.add(Map.of("name", f.getName(), "type", "value"));
             }
             return out;
         }

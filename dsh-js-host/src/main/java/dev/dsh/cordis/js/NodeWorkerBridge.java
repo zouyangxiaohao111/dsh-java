@@ -80,9 +80,39 @@ public final class NodeWorkerBridge {
                 return doCommandRegister(args);
             case "logger":
                 return doLogger(args);
+            case "fiberState":
+                return doFiberState();
+            case "fiberAssertActive":
+                return doFiberAssertActive();
+            case "baseUrl":
+                return doBaseUrl();
             default:
                 throw new NodeBridgeError("unknown ctx method " + method);
         }
+    }
+
+    // ---- ctx.fiber live seam(M7-8 B)----
+
+    /** {@code ctx.fiber.state}:Java 核心 fiber 状态(数值,FiberState 与 shim 的
+     *  {@code FiberState} 枚举值一一对应:PENDING=0, LOADING=1, ACTIVE=2, ...)。 */
+    private JsonNode doFiberState() {
+        return host.toJsonNode(ctx.fiber.state.ordinal());
+    }
+
+    /** {@code ctx.fiber.assertActive()}:存活(未 DISPOSED)返回 undefined;已 dispose 抛
+     *  INACTIVE_EFFECT,经桥报错(worker 侧 catch 可感知)—— agent-loop prepare 的
+     *  {@code ownerCtx.fiber.assertActive()} 经此跨桥到 Java 核心。 */
+    private JsonNode doFiberAssertActive() {
+        ctx.fiber.assertActive();
+        return NullNode.instance;
+    }
+
+    /** {@code ctx.baseUrl}:Java 核心 root.baseUrl(插件 context 继承)。未设置 → undefined。 */
+    private JsonNode doBaseUrl() {
+        String base = ctx.baseUrl;
+        return base == null || base.isEmpty()
+                ? host.toJsonNode(NodeWorkerJsHost.UNDEFINED)
+                : host.toJsonNode(base);
     }
 
     // ---- ctx 方法实现 ----
