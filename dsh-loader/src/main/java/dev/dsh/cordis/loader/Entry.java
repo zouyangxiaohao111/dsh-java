@@ -23,24 +23,33 @@ import java.util.Locale;
  *   <li>{@code disabled} — dsh profile 行的 {@code disabled} 值(M7-6):{@code {$dshJs: expr}}
  *       标记对象 → 由 loader 交给宿主求值(truthy → 插件不加载);null = 无 disabled 表达式
  *       (字面量禁用已在 compose 阶段剔除)。</li>
+ *   <li>{@code group} — 可选进程组名(M9-1):同组 {@code node} 插件共享一个 NodeWorkerJsHost
+ *       (同一 Node 进程),route handler 与 node:http req/res 本地直传,消除跨 worker 路由死锁
+ *       (真实 dsh 中 webserver 与路由注册者同宿主进程);null = 每插件独立 worker(默认并行)。</li>
  * </ul>
  */
 public record Entry(String name, String source, String path, HostKind host, String mainClass, JsonNode config,
-                    JsonNode disabled) {
+                    JsonNode disabled, String group) {
 
     /** 4 参便捷构造(无 {@code mainClass}/{@code config})——保持旧调用方兼容。 */
     public Entry(String name, String source, String path, HostKind host) {
-        this(name, source, path, host, null, null, null);
+        this(name, source, path, host, null, null, null, null);
     }
 
     /** 5 参便捷构造(无 {@code config})——保持旧调用方兼容。 */
     public Entry(String name, String source, String path, HostKind host, String mainClass) {
-        this(name, source, path, host, mainClass, null, null);
+        this(name, source, path, host, mainClass, null, null, null);
     }
 
     /** 6 参便捷构造(无 {@code disabled})——保持旧调用方兼容。 */
     public Entry(String name, String source, String path, HostKind host, String mainClass, JsonNode config) {
-        this(name, source, path, host, mainClass, config, null);
+        this(name, source, path, host, mainClass, config, null, null);
+    }
+
+    /** 7 参便捷构造(无 {@code group})——保持旧调用方兼容。 */
+    public Entry(String name, String source, String path, HostKind host, String mainClass, JsonNode config,
+                 JsonNode disabled) {
+        this(name, source, path, host, mainClass, config, disabled, null);
     }
 
     /** 从 yml 节点解析;{@code name} 缺省回退到 dsh 写法的 {@code id}。 */
@@ -63,7 +72,9 @@ public record Entry(String name, String source, String path, HostKind host, Stri
             throw new IllegalArgumentException("plugin entry is missing a name (expecting name/id)");
         }
         if (mainClass != null && mainClass.isBlank()) mainClass = null;
-        return new Entry(name.trim(), source, path, host, mainClass, config);
+        String group = node.path("group").isTextual() ? node.path("group").asText().trim() : null;
+        if (group != null && group.isBlank()) group = null;
+        return new Entry(name.trim(), source, path, host, mainClass, config, null, group);
     }
 
     /** 原始引用(source / path 之一;前缀剥离属 HostSelector 的职责)。 */

@@ -314,7 +314,11 @@ public final class DshProfileReader {
             // disabled 为 {$dshJs: expr} 标记对象 → 不再保守跳过,经 Entry.disabled 透传给
             // loader,由 loader 让宿主求值(M7-6;scope = process + dshHomePath,同 config 通道)。
             JsonNode disabledMarker = isJsMarker(disabled) ? disabled : null;
-            out.add(new Entry(id.trim(), module.trim(), null, null, null, config, disabledMarker));
+            // M9-1:进程组(字符串 `group: <名>`)—— 同组 node 插件共享一个 worker,经 patch 行
+            // 透传;布尔 `group: true` 是 dsh group 容器行(上面已跳过),不冲突。
+            String group = row.path("group").isTextual() ? row.path("group").asText().trim() : null;
+            if (group != null && group.isBlank()) group = null;
+            out.add(new Entry(id.trim(), module.trim(), null, null, null, config, disabledMarker, group));
         }
         return out;
     }

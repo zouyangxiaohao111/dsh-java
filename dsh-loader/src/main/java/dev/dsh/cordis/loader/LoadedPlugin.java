@@ -29,9 +29,16 @@ public final class LoadedPlugin implements AutoCloseable {
     private final ClassLoader classLoader; // Java 插件隔离 CL,null for JS
     private final Path source;           // 热更新监听源文件,null for 类名型 Java
     private final FileWatcher watcher;
+    private final boolean sharedHost;    // M9-1:进程组共享宿主(close 不关 host,由组生命周期回收)
 
     LoadedPlugin(Entry entry, HostKind kind, String ref, Plugin<?> plugin, JsHost host, Path source,
                  ClassLoader classLoader) {
+        this(entry, kind, ref, plugin, host, source, classLoader, false);
+    }
+
+    /** 8 参构造:共享宿主标记(M9-1 进程组)。共享宿主由 {@link PluginLoaderService} 的组回收,不随插件 close。 */
+    LoadedPlugin(Entry entry, HostKind kind, String ref, Plugin<?> plugin, JsHost host, Path source,
+                 ClassLoader classLoader, boolean sharedHost) {
         this.entry = entry;
         this.kind = kind;
         this.ref = ref;
@@ -40,6 +47,7 @@ public final class LoadedPlugin implements AutoCloseable {
         this.classLoader = classLoader;
         this.source = source;
         this.watcher = source != null ? new FileWatcher(source) : null;
+        this.sharedHost = sharedHost;
     }
 
     public Entry entry() { return entry; }
@@ -79,7 +87,9 @@ public final class LoadedPlugin implements AutoCloseable {
     }
 
     private void releaseResources() {
-        if (host != null) host.close();
+        // M9-1:共享宿主(进程组)不随插件 close——由 PluginLoaderService 的组回收统一关闭,
+        // 避免一个组成员卸载时把整组 worker 关掉。
+        if (host != null && !sharedHost) host.close();
         if (classLoader instanceof AutoCloseable ac) {
             try {
                 ac.close();
@@ -88,4 +98,7 @@ public final class LoadedPlugin implements AutoCloseable {
             }
         }
     }
+
+    /** 是否进程组共享宿主(M9-1):host 归 {@link PluginLoaderService} 组回收,不随本插件 close。 */
+    public boolean sharedHost() { return sharedHost; }
 }

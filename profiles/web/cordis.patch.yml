@@ -31,3 +31,91 @@
   # typert client API gateway (@deepseek-ai/dsh-api-gateway, the typed-protocol
   # transport for browser↔host typert RPC). Client-only surface (M7-8 pin);
   # the web UI uses the @deepseek-ai/dsh-host-apiproxy gateway instead.
+
+# ── M9-1:web 运行时进程组 ───────────────────────────────────────────────────
+# 同组 node 插件共享一个 NodeWorkerJsHost(同一 Node 进程):route handler 与 node:http
+# req/res 本地直传,消除跨 worker 路由死锁(M8-1 §5 —— 真实 dsh 中 webserver 与路由
+# 注册者同宿主进程)。组 = HTTP/路由/client-module 全路径:webserver + 路由注册
+# (modules/connection/api-remotes)+ web-runtime + api-gateway + client 宿主。
+# 纯服务行(storage/workspace/session-stats 等)与 base 覆盖行(tools/工具)不在组内,
+# 服务经 provide 句柄化跨 worker 调用,不需要同 worker。
+- id: webserver
+  group: web
+- id: web-runtime
+  group: web
+- id: modules
+  group: web
+- id: connection
+  group: web
+- id: api-gateway
+  group: web
+- id: api-remotes
+  group: web
+- id: cordis-host-runner
+  group: web
+- id: web-startup
+  group: web
+- id: client-runtime
+  group: web
+- id: cordis-client-runner
+  group: web
+- id: agent-presets
+  group: web
+- id: locale
+  group: web
+# ui-* 客户端模块行:modules 扫描它们进 __DSH_BOOT__ 并按 /plugins/<id>/client.js 服务;
+# 同 worker 保证客户端模块本地可服务(不走跨 worker req/res)。
+- id: ui-theme
+  group: web
+- id: ui-layout
+  group: web
+- id: ui-sidebar
+  group: web
+- id: ui-settings
+  group: web
+- id: ui-settings-general
+  group: web
+- id: ui-settings-models
+  group: web
+- id: ui-settings-plugin-inventory
+  group: web
+- id: ui-conversation
+  group: web
+- id: ui-tool
+  group: web
+- id: ui-cordis
+  group: web
+- id: ui-workflow-run
+  group: web
+- id: ui-deliverables
+  group: web
+- id: ui-workspace
+  group: web
+- id: ui-input-trigger
+  group: web
+- id: ui-commands
+  group: web
+- id: ui-skill
+  group: web
+- id: ui-subagent
+  group: web
+- id: ui-jobs
+  group: web
+- id: ui-goal
+  group: web
+- id: ui-message-feedback
+  group: web
+- id: ui-model-selection
+  group: web
+- id: ui-permission
+  group: web
+- id: ui-agent-preset
+  group: web
+- id: ui-settings-plugins
+  group: web
+- id: ui-plan
+  group: web
+- id: ui-user-questions
+  group: web
+- id: ui-trajectory
+  group: web

@@ -66,6 +66,7 @@ public final class PluginLoaderService implements AutoCloseable {
     private Path baseDir;                        // 配置所在目录(相对引用基准)
     private final List<LoadedPlugin> loaded = new ArrayList<>();
     private final Map<Path, FileWatcher> configWatchers = new HashMap<>();
+    private final Map<String, JsHost> groupHosts = new HashMap<>();  // M9-1:进程组 → 共享 Node worker
     private Thread watcherThread;
     private volatile Throwable lastError;         // 最近一次后台热更新失败(无失败为 null)
     private volatile Consumer<Throwable> onReloadError;
@@ -116,6 +117,8 @@ public final class PluginLoaderService implements AutoCloseable {
 
     /** 共享的"全部加载 + 全部注册 + 校验生效 + 刷新监听"流程(load / loadEntries 复用)。 */
     private List<LoadedPlugin> loadAndRegister(List<Entry> entries) throws Exception {
+        // M9-1:全量重载 → 关闭所有进程组宿主(全新 worker;避免 Node 模块缓存返回旧模块)。
+        closeAllGroupHosts();
         List<LoadedPlugin> next = loadAll(entries);     // 先全部加载(失败 → 释放已建宿主)
         try {
             for (LoadedPlugin lp : next) {
@@ -250,6 +253,15 @@ public final class PluginLoaderService implements AutoCloseable {
         List<LoadedPlugin> old = new ArrayList<>(loaded);
         loaded.clear();
         for (LoadedPlugin lp : old) lp.unregister(ctx);
+        // M9-1:所有组成员已卸载 → 关闭进程组共享宿主(共享宿主不随单个插件 close)
+        for (JsHost gh : groupHosts.values()) {
+            try {
+                gh.close();
+            } catch (Throwable t) {
+                ctx.logger().error(t);
+            }
+        }
+        groupHosts.clear();
         configWatchers.clear();
     }
 
@@ -381,6 +393,20 @@ public final class PluginLoaderService implements AutoCloseable {
         Path requireCwd = Files.isDirectory(abs) ? abs
                 : (entryFile.getParent() != null ? entryFile.getParent() : abs);
 
+        // M9-1:进程组 —— 同组 node 插件共享一个 NodeWorkerJsHost(同一 Node 进程),
+        // route handler 与 node:http req/res 本地直传,消除跨 worker 路由死锁
+        // (真实 dsh 中 webserver 与路由注册者同宿主进程)。组宿主由本 loader 回收,不随插件 close。
+        String group = entry.group();
+        if (group != null) {
+            JsHost shared = sharedNodeHost(group, requireCwd);
+            try {
+                JsPluginAdapter ga = new JsPluginAdapter(shared, shared.loadModule(entryFile));
+                return new LoadedPlugin(entry, HostKind.NODE, re.ref(), ga, shared, entryFile, null, true);
+            } catch (Exception e) {
+                throw e;   // 组宿主不在此关(可能已被其他组成员复用);失败由外层回滚处理
+            }
+        }
+
         JsHost host;
         HostKind kind;
         JsPluginAdapter adapter;
@@ -405,6 +431,56 @@ public final class PluginLoaderService implements AutoCloseable {
         return new LoadedPlugin(entry, kind, re.ref(), adapter, host, entryFile, null);
     }
 
+    // ---- M9-1:进程组共享宿主 ----
+
+    /** 取/建进程组共享的 Node worker(首个成员建,后续成员复用)。 */
+    private JsHost sharedNodeHost(String group, Path requireCwd) throws IOException {
+        JsHost h = groupHosts.get(group);
+        if (h == null) {
+            h = hostFactory.create(HostKind.NODE, requireCwd);
+            groupHosts.put(group, h);
+        }
+        return h;
+    }
+
+    /** 关闭并移除某进程组共享宿主(组变更 → 全新 worker,避免 Node 模块缓存返回旧模块)。 */
+    private void closeGroupHost(String group) {
+        JsHost h = groupHosts.remove(group);
+        if (h != null) {
+            try {
+                h.close();
+            } catch (Throwable t) {
+                ctx.logger().error(t);
+            }
+        }
+    }
+
+    /** 关闭全部进程组共享宿主(全量重载 loadAndRegister 前调用)。 */
+    private void closeAllGroupHosts() {
+        for (String g : new java.util.ArrayList<>(groupHosts.keySet())) closeGroupHost(g);
+    }
+
+    /** 整组重载(组成员源文件变更 / 组变更):关闭旧组宿主,全体成员以新组宿主重新加载注册。 */
+    private void reloadGroup(String group) throws Exception {
+        closeGroupHost(group);
+        for (int i = 0; i < loaded.size(); i++) {
+            LoadedPlugin lp = loaded.get(i);
+            if (!group.equals(lp.entry().group())) continue;
+            LoadedPlugin np = loadPlugin(lp.entry());
+            try {
+                lp.unregisterRuntime(ctx);
+                np.register(ctx);
+                verifyFiber(np, ctx);
+            } catch (Exception ex) {
+                quietlyUnregister(np, ctx);
+                try { lp.register(ctx); } catch (Exception ignored) { }
+                throw ex;
+            }
+            closeQuietly(lp);
+            loaded.set(i, np);
+        }
+    }
+
     // ---- 内部:diff / 替换 ----
 
     /** diff 重载:加载新/变更(未注册)→ 提交(移除删除、替换变更、注册新增);提交期失败按插件回滚旧实现。 */
@@ -414,14 +490,29 @@ public final class PluginLoaderService implements AutoCloseable {
         Set<String> nextNames = new HashSet<>();
         for (Entry e : nextEntries) nextNames.add(e.name());
 
+        // M9-1:进程组 —— 若某组成员新增/变更/移除,整组强制重载(共享 worker 的 Node 模块
+        // 缓存要求全新宿主),先关闭旧组宿主。
+        Set<String> dirtyGroups = new HashSet<>();
+        for (Entry e : nextEntries) {
+            if (e.group() == null) continue;
+            LoadedPlugin old = byName.get(e.name());
+            if (old == null || !old.entry().equals(e)) dirtyGroups.add(e.group());
+        }
+        for (LoadedPlugin cur : loaded) {
+            if (cur.entry().group() != null && !nextNames.contains(cur.entry().name())) {
+                dirtyGroups.add(cur.entry().group());
+            }
+        }
+        for (String g : dirtyGroups) closeGroupHost(g);
+
         // Phase A:加载全部"新增或变更"条目(未注册)。任一失败 → 释放已建宿主,抛出,旧态保持。
         Map<String, LoadedPlugin> next = new LinkedHashMap<>();
         List<LoadedPlugin> staged = new ArrayList<>();
         try {
             for (Entry e : nextEntries) {
                 LoadedPlugin old = byName.get(e.name());
-                if (old != null && old.entry().equals(e)) {
-                    next.put(e.name(), old);          // 未变更,复用
+                if (old != null && old.entry().equals(e) && !dirtyGroups.contains(e.group())) {
+                    next.put(e.name(), old);          // 未变更且组未动,复用
                     continue;
                 }
                 LoadedPlugin np = loadPlugin(e);
@@ -477,6 +568,11 @@ public final class PluginLoaderService implements AutoCloseable {
      *  新实现注册后校验其 fiber 实际生效(apply 抛错被 Fiber.reload 吞掉 → 状态 FAILED),
      *  校验失败则释放新句柄并恢复旧实现(旧宿主保留至提交前)。 */
     private void reloadPlugin(LoadedPlugin old, int index) throws Exception {
+        // M9-1:进程组成员源文件变更 → 整组重载(共享 worker 的 Node 模块缓存,单插件重载会拿旧模块)
+        if (old.sharedHost() && old.entry().group() != null) {
+            reloadGroup(old.entry().group());
+            return;
+        }
         LoadedPlugin np = loadPlugin(old.entry());
         try {
             old.unregisterRuntime(ctx);          // 腾出服务名;保留旧宿主以便回滚

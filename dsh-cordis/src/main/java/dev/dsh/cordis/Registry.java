@@ -27,7 +27,11 @@ public final class Registry {
     public void delete(Plugin<?> plugin) {
         Plugin.Runtime runtime = _internal.remove(plugin);
         if (runtime == null) return;
-        for (Fiber fiber : runtime.fibers) {
+        // 快照 fibers 再逐个 dispose:fiber.dispose() 会从 DisposableList 删除条目,直接迭代
+        // 活列表 → ConcurrentModificationException(共享 host 多插件 dispose 时暴露)。
+        List<Fiber> fibers = new java.util.ArrayList<>();
+        for (Fiber fiber : runtime.fibers) fibers.add(fiber);
+        for (Fiber fiber : fibers) {
             fiber.dispose();
         }
     }
