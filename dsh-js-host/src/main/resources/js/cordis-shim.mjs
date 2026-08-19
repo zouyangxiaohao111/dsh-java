@@ -45,6 +45,35 @@ export const symbols = {
   effect: Symbol.for('cordis.effect'),
   original: Symbol.for('cordis.original'),
   shadow: Symbol.for('cordis.shadow'),
+  checkProto: Symbol.for('cordis.checkProto'),
+}
+
+/**
+ * Dependency-injection decorator (registry.ts:37-60). M8:real dsh web bundles
+ * import {@code Inject} (mostly as a type; a few class plugins decorate with
+ * it). Minimal faithful surface: the class-decorator path records the injected
+ * service name on the class's `inject` map (inherited chain + checkProto
+ * marker, mirroring registry.ts:39-44); the method path is out of scope for
+ * the host shim and fails loud so a real usage surfaces instead of silently
+ * losing a dependency.
+ */
+export function Inject(name, config) {
+  return function (value, decorator) {
+    if (decorator?.kind === 'class') {
+      if (!Object.hasOwn(value, 'inject')) {
+        Object.defineProperty(value, 'inject', {
+          value: Object.create(Object.getPrototypeOf(value).inject ?? null),
+          enumerable: false,
+          writable: true,
+          configurable: true,
+        })
+        value.inject[symbols.checkProto] = true
+      }
+      value.inject[name] = config
+    } else {
+      throw new Error('@Inject() can only be used on class or class methods (cordis-shim)')
+    }
+  }
 }
 
 /**
@@ -74,6 +103,62 @@ export function getTraceable(ctx, value) {
     return Object.getPrototypeOf(value)
   }
   return value
+}
+
+/**
+ * Run a callback and splice outer call-site frames into thrown async errors
+ * (utils.ts:268-282). M8:the vendored cordis-plugin-loader imports it to wrap
+ * plugin application; the Java core already captures the root error message,
+ * so a faithful-enough shim rethrows the original reason (stack intact).
+ */
+export function composeError(callback, getOuterStack) {
+  const info = { offset: 1, error: new Error() }
+  try {
+    const result = callback(info)
+    if (result && typeof result === 'object' && typeof result.then === 'function') {
+      return Promise.resolve(result).then(undefined, (reason) => { throw reason })
+    }
+    return result
+  } catch (reason) {
+    throw reason
+  }
+}
+
+/**
+ * Logger static formatting surface (logger.ts) — the subset the vendored
+ * logger-console exporter reads ({@code color}/{@code code}/{@code format}).
+ * The console exporter itself is not part of the Java-hosted row tree, so the
+ * instance face is a minimal no-op that still accepts the exporter contract.
+ */
+export class Logger {
+  static color(exporter, code, value, decoration = '') {
+    if (!exporter?.colors) return '' + value
+    const prefix = `[3${code < 8 ? code : '8;5;' + code}${exporter.colors >= 2 ? decoration : ''}m`
+    return `${prefix}${value}[0m`
+  }
+
+  static code(name, level) {
+    let hash = 0
+    for (let i = 0; i < name.length; i++) {
+      hash = ((hash << 3) - hash) + name.charCodeAt(i) + 13
+      hash |= 0
+    }
+    return Math.abs(hash) % 256
+  }
+
+  static format(exporter, message) {
+    const args = message.args.slice()
+    const head = args.shift()
+    return `${message.type}: [${message.name}] ${head}${args.length ? ' ' + args.join(' ') : ''}`
+  }
+
+  constructor(options, service) {
+    this.name = options?.name ?? 'default'
+    this.error = () => {}
+    this.info = () => {}
+    this.warn = () => {}
+    this.debug = () => {}
+  }
 }
 
 /**

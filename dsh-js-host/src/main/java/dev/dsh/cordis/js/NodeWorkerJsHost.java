@@ -51,7 +51,7 @@ import java.util.stream.Collectors;
  */
 public final class NodeWorkerJsHost implements JsHost {
     /** 单请求超时(worker 阻塞在 macrotask await 时同步等待会自爆,此处兜底)。 */
-    static final long REQUEST_TIMEOUT_MS = 30_000;
+    static final long REQUEST_TIMEOUT_MS = 120_000;
     /** 入站行长度上限(hostile-peer:拒绝超大行)。 */
     private static final int MAX_LINE_LENGTH = 8 * 1024 * 1024;
 
@@ -93,6 +93,9 @@ public final class NodeWorkerJsHost implements JsHost {
 
     private final AtomicLong seq = new AtomicLong(1);
     private final AtomicLong serviceSeq = new AtomicLong(1_000_000);
+    /** M8 low ②:reader 线程句柄转发专用执行器(虚拟线程,JDK 25)——替代每次 new Thread。 */
+    private final java.util.concurrent.ExecutorService remoteForwardExecutor =
+            java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor();
 
     private final Thread readerThread;
     private final Thread deathWatcher;
@@ -142,11 +145,15 @@ public final class NodeWorkerJsHost implements JsHost {
         // M6-5b:node-bridge.js 经 module.register 注册 resolve 钩子(node-resolve-hook.cjs,
         // 与 bridge 同目录),把 @deepseek-ai/cordis 拦到 shim;shim 路径经环境变量传入。
         extractResource("js/node-resolve-hook.cjs", runtimeDir.resolve("node-resolve-hook.cjs"));
+        // M8:`node:process` 内置模块在桥侧活跃读 stdin 时 import 会死锁(Windows,Node 24)——
+        // resolve 钩子把它拦到进程 shim(惰性 re-export globalThis.process),路径经环境变量传入。
+        Path processShim = extractResource("js/node-process-shim.mjs", runtimeDir.resolve("node-process-shim.mjs"));
         ProcessBuilder pb = new ProcessBuilder(nodeExecutable(), bridgeScript.toAbsolutePath().toString());
         if (requireCwd != null && !requireCwd.toString().isEmpty()) {
             pb.directory(requireCwd.toAbsolutePath().toFile());
         }
         pb.environment().put("DSH_CORDIS_SHIM", shim.toAbsolutePath().normalize().toString());
+        pb.environment().put("DSH_PROCESS_SHIM", processShim.toAbsolutePath().normalize().toString());
         if (moduleBases != null && !moduleBases.isEmpty()) {
             String joined = moduleBases.stream()
                     .filter(Objects::nonNull)
@@ -708,9 +715,11 @@ public final class NodeWorkerJsHost implements JsHost {
         return exportRemoteDeep(invokeService(handle, method, javaArgs));
     }
 
-    /** reader 线程上的句柄转发:helper 线程阻塞等属主 worker 回复,reader 线程继续读(防互等死锁)。 */
+    /** reader 线程上的句柄转发:helper 虚拟线程阻塞等属主 worker 回复,reader 线程继续读
+     *  (防互等死锁)。M8 low ②:走 {@link #remoteForwardExecutor}(虚拟线程,每宿主一个执行器),
+     *  不再每次 new Thread。 */
     private void forwardRemoteAsync(JsonNode msg, long id) {
-        Thread t = new Thread(() -> {
+        remoteForwardExecutor.execute(() -> {
             try {
                 long handle = msg.path("handle").asLong(-1);
                 Object result = handleServiceInvocation(handle, msg.path("method").asText(""), msg.path("args"));
@@ -728,9 +737,7 @@ public final class NodeWorkerJsHost implements JsHost {
                     // worker 已关闭:放弃
                 }
             }
-        }, "dsh-node-remote-forward");
-        t.setDaemon(true);
-        t.start();
+        });
     }
 
     private void failAllPending(String reason) {
@@ -762,6 +769,12 @@ public final class NodeWorkerJsHost implements JsHost {
             ObjectNode n = mapper.createObjectNode();
             n.put("$kind", "undefined");
             return n;
+        }
+        // M8:Context.NO_SERVICE(JS ctx.get 语义的"服务不可用"哨兵)统一映射 JS undefined。
+        // LoaderService.await() 返回它 → worker 侧 web-runtime 的 `ctx.get("loader")?.await()`
+        // 得到 undefined → "no settle promise" 分支(已 settle)直接 printUrl。
+        if (value == dev.dsh.cordis.Context.NO_SERVICE) {
+            return toJsonNode(UNDEFINED);
         }
         if (value instanceof JsonNode j) return j;
         if (value instanceof NodeRef ref) {
@@ -1044,6 +1057,8 @@ public final class NodeWorkerJsHost implements JsHost {
         bridges.clear();
         remoteObjects.clear();
         failAllPending("node worker closed");
+        // M8 low ②:回收 reader 句柄转发的虚拟线程执行器(close 后不再有入站消息需要转发)
+        remoteForwardExecutor.shutdownNow();
     }
 
     /** 关闭 worker 的 stdin(与 write 同锁,避免并发写途中关闭)。 */

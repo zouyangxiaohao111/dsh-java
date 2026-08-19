@@ -3,6 +3,10 @@ build/
 .idea/
 *.iml
 out/
+# web profile node_modules junctions to the vendor/dsh workspace packages
+# (created by scripts/link-web-profile.mjs, never committed — junctions are
+# filesystem links and git core.symlinks=false cannot store them)
+profiles/web/node_modules/
 # dsh-plugin spike 的真实 npm 依赖(zod 由 npm install 重装;手写 shim 保留提交)
 dsh-js-host/src/test/resources/dsh-plugin/node_modules/zod/
 dsh-js-host/src/test/resources/dsh-plugin/node_modules/.package-lock.json

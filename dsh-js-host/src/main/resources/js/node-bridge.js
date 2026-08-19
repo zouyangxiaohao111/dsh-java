@@ -158,8 +158,15 @@ function takeLineSync() {
 async function takeLineAsync() {
   for (;;) {
     if (Atomics.load(slot.state, 0) === EMPTY) {
-      const r = Atomics.waitAsync(slot.state, 0, EMPTY)
-      if (r.async) await r.value
+      // M8:主线程不在槽上挂 Atomics.waitAsync —— 挂起的 waitAsync 会与 Node ESM loader
+      // 对同一 agent 的 Atomics.wait/notify 抢醒:loader 的同步 wait 被 notify 误醒(空转
+      // 重挂)而 loader 内部等待永不满足 → dynamic import() 死锁(实测 Node 24 Windows:
+      // 加载 `import process from 'node:process'` 的 ESM 图时挂起,直到有其它 stdin 行到来
+      // 才解;minimal worker 复现:reader+slot+Atomics.waitAsync+import 挂,换成 setTimeout
+      // 轮询(Atomics.load 只读、不注册 waiter)即通)。每行轮询延迟 2ms,对 NDJSON 消息流
+      // 可忽略。
+      await new Promise(r => setTimeout(r, 2))
+      continue
     }
     const s = Atomics.load(slot.state, 0)
     if (s === EOF) return null
@@ -218,12 +225,19 @@ const GLOBAL_FN_ID_BASE = 200_000_000
 //   - 仅 fn 型 own 成员的对象(probe 类)仍是普通 JSON(方法 → fn 句柄,数据原样)——M5-NEEDS
 //     语义不变;类实例才走 live 句柄(带原型方法 = 需方法调用)。
 
-/** 是否可迭代对象(非数组):有 next() 或是 Symbol.iterator 可调(Set/Map/generator/...)。 */
+/** 是否可迭代对象(非数组):有 Symbol.iterator 可调(Set/Map/generator/...),或是一个
+ *  真正的迭代器对象(经 iterable 的 [Symbol.iterator]() 产生的原型非 Object.prototype)。
+ *  收紧(M8 low ①):带 next() 的纯数据对象(原型 = Object.prototype,如 { next: fn, ... }
+ *  配置/数据容器)不再被句柄化 —— 否则它们会被当作迭代器跨桥为 JsIterable,丢失数据面。 */
 function isIteratorLike(v) {
   if (v === null || typeof v !== 'object') return false
   if (Array.isArray(v)) return false   // 数组仍是数据(JSON array),Java 侧 List
-  if (typeof v.next === 'function') return true
-  return typeof v[Symbol.iterator] === 'function'
+  if (typeof v[Symbol.iterator] === 'function') return true
+  // 无 Symbol.iterator 的对象只有"真迭代器对象"才认(原型非普通 Object):纯数据对象
+  // 带 next() 成员(如 { next: fn } 数据)是数据不是迭代器。
+  if (typeof v.next !== 'function') return false
+  const proto = Object.getPrototypeOf(v)
+  return proto !== null && proto !== Object.prototype
 }
 
 /** 是否 live 对象(类实例 / 带原型方法):原型链上有非 Object.prototype 的 function 成员。 */
@@ -660,6 +674,32 @@ function makeCtx(ctxId) {
     // `yield enter(...); announce(agent)` 在登记时真正 announce —— 旧桥只步进到首个 yield,
     // announce 被延后到 unload,agent/created 永不按 cordis 语义触发。
     // Java 侧登记后返回一个 Java 持有的 disposer 服务句柄,worker 拿到后可直接 dispose()。
+    // M8:ctx.plugin(plugin, config) —— 挂一个 JS 子插件(web-runtime 用它挂 frontend-static
+    // 的 { apply } 插件到 fallback seat)。函数 / { apply } / Service 子类三种形状都支持:
+    //   - 函数 → apply(ctx, config)(普通插件函数);
+    //   - { apply, inject } → apply(ctx, config)(frontend-static 同形);
+    //   - Service 子类 → new Plugin(ctx, config)(cordis 类插件语义,与 loader apply 同形)。
+    // apply 经 ctx.effect 登记的 disposer 生命周期归 Java fiber(与 loader 插件一致)。返回
+    // 子插件的 apply 结果(函数 → 可作为 disposer;普通值 → undefined)。
+    plugin: function (plugin, config) {
+      // 必须把 THIS(代理)传给子插件的 apply —— makeCtx 里的闭包 ctx 是未代理的原对象,
+      // 子插件读 ctx.webServer 等服务属性会得 undefined(服务属性经 Proxy get 路由)。
+      const self = this
+      let apply
+      if (typeof plugin === 'function') {
+        if (plugin.prototype && typeof plugin.prototype[Symbol.for('cordis.init')] !== 'undefined') {
+          // Service 子类:构造即经 ctx.provide 注册进 Java 核心
+          return new plugin(self, config)
+        }
+        apply = plugin
+      } else if (plugin && typeof plugin.apply === 'function') {
+        apply = plugin.apply
+      } else {
+        throw new Error('ctx.plugin: unsupported plugin shape')
+      }
+      const result = apply(self, config)
+      return typeof result === 'function' ? result : undefined
+    },
     effect: (body, label) => {
       const stepped = body()
       const disposers = []
@@ -940,7 +980,14 @@ function dshHomePath(...segments) {
 }
 
 /** 求值一个 !!js 表达式;scope = process + dshHomePath(与真实 dsh Loader 的求值面一致)。 */
-function evalJsExpression(expr) {
+function evalJsExpression(expr, ctx) {
+  // M8:scope 加 ctx(镜像 dsh Loader 的求值面) —— web-app bundle 的 config 表达式读
+  // ctx.webStartup.host/port/trustedHosts(web-startup 先 apply 提供该服务)。无 ctx 的
+  // 调用(disabled 通道)保持原 scope(process + dshHomePath)。
+  if (ctx !== undefined) {
+    const fn = new Function('process', 'dshHomePath', 'ctx', '"use strict"; return (' + expr + ')\n')
+    return fn(process, dshHomePath, ctx)
+  }
   const fn = new Function('process', 'dshHomePath', '"use strict"; return (' + expr + ')\n')
   return fn(process, dshHomePath)
 }
@@ -950,13 +997,13 @@ function evalJsExpression(expr) {
  * 把 YAML 的 {@code !!js} 标量解析成显式标记对象(不裸传字符串)。求值失败 → 保守处理:
  * 记日志 + 该值按表达式原文保留(插件读到字符串,不挂加载)。
  */
-function evalJsMarkers(value) {
-  if (Array.isArray(value)) return value.map(evalJsMarkers)
+function evalJsMarkers(value, ctx) {
+  if (Array.isArray(value)) return value.map((v) => evalJsMarkers(v, ctx))
   if (value !== null && typeof value === 'object') {
     const keys = Object.keys(value)
     if (keys.length === 1 && keys[0] === '$dshJs' && typeof value.$dshJs === 'string') {
       try {
-        return evalJsExpression(value.$dshJs)
+        return evalJsExpression(value.$dshJs, ctx)
       } catch (e) {
         process.stderr.write('node-bridge: !!js eval failed for "' + value.$dshJs + '": '
           + (e && e.message ? e.message : e) + '; keeping expression as-is\n')
@@ -964,7 +1011,7 @@ function evalJsMarkers(value) {
       }
     }
     const out = {}
-    for (const k of keys) out[k] = evalJsMarkers(value[k])
+    for (const k of keys) out[k] = evalJsMarkers(value[k], ctx)
     return out
   }
   return value
@@ -977,18 +1024,19 @@ async function handleRequest(msg) {
     case 'require': {
       const file = msg.file || msg.specifier
       if (typeof file !== 'string' || !file) throw new Error('bad module specifier')
+      // M8 fix:统一走异步 import() 而非同步 require(file)。实测(Windows,Node 24)同步
+      // require(esm) 在 worker 里加载 ESM 图会因 `import process from 'node:process'`
+      // 卡死 —— 主线程被同步 require 占住,ESM loader 对 process 模块的初始化要等事件循环,
+      // 而事件循环被占 → 死锁(直到有其它 stdin 行/Java 超时关 stdin 才解)。异步 import()
+      // 在 await 时事件循环自由(桥的异步泵),不会死锁。ESM → namespace,CJS → { default },
+      // resolvePlugin/pluginMeta 已处理 default 解包(apply 时 resolvePlugin(mod))。
       let mod
       try {
-        mod = require(file)
+        mod = await import(pathToFileURL(file).href)
       } catch (e) {
-        // ESM top-level await → Node 抛 ERR_REQUIRE_ASYNC_MODULE。异步 worker 现在可以
-        // await:退化为动态 import(),等 TLA settle 后取 namespace(原同步宿主限制已解除)。
-        if (e && (e.code === 'ERR_REQUIRE_ASYNC_MODULE' || /top-level await/i.test(String(e.message)))) {
-          const { pathToFileURL } = require('node:url')
-          mod = await import(pathToFileURL(file).href)
-        } else {
-          throw e
-        }
+        // import() 失败(如非 ESM 的 .cjs 老插件经 pathToFileURL 加载异常)→ 落回 require。
+        // 仅兜底;require(esm) 的 process 死锁路径不再触碰(它发生在 import 成功时,不落这里)。
+        mod = require(file)
       }
       const id = nextHandle++
       modById.set(id, mod)
@@ -1019,8 +1067,10 @@ async function handleRequest(msg) {
       if (ctx === undefined) throw new Error('unknown ctx handle ' + JSON.stringify(msg.ctx))
       const { apply, source } = resolvePlugin(mod)
       // M7-5 配置通道:先求值 config 里的 !!js 标记值,再按插件 static Config 默认化。
+      // M8:求值 scope 带 ctx —— web-app bundle 的 config 表达式读 ctx.webStartup.*
+      // (web-startup 先 apply 提供该服务;跨 worker 经 M7-8 provide 句柄化可读)。
       // 两者失败都回退原 config(带日志),不因默认化失败挂掉加载。
-      let config = evalJsMarkers(deserializeValue(msg.config))
+      let config = evalJsMarkers(deserializeValue(msg.config), ctx)
       config = defaultConfig(getPluginConfig(mod), config)
       // cordis 类插件语义(M6-5b):Service 子类(如 @deepseek-ai/dsh-system-prompt 的
       // SystemPrompt 默认导出)经 `new Plugin(ctx, config)` 实例化 —— 构造器里
@@ -1028,6 +1078,14 @@ async function handleRequest(msg) {
       let result
       if (apply === source && await isServiceClass(source)) {
         result = new source(ctx, config)
+        // M8:Service.init 生命周期 —— cordis 在 apply 后跑插件的 [Service.init](symbol
+        // init,如 webserver 的 listen 绑定端口)。不跑则 Service 的服务值(如 webServer.port)
+        // 永不就绪。await 其 async 结果。
+        const init = result && typeof result === 'object' && result[Symbol.for('cordis.init')]
+        if (typeof init === 'function') {
+          const initResult = init.call(result)
+          if (initResult && typeof initResult.then === 'function') await initResult
+        }
       } else {
         result = apply(ctx, config)
       }

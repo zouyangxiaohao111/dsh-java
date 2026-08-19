@@ -114,6 +114,10 @@ public final class Reflect {
         // Java port must snapshot to match that semantics. This unblocks the `tools` row.
         List<Plugin.Runtime> runtimes = new ArrayList<>(this.ctx.registry.values());
         for (Plugin.Runtime runtime : runtimes) {
+            // M8 low ⑤:快照后刷新期间可能已移除该 runtime(refresh 的 apply 经 ctx.plugin 卸载
+            // 插件)→ 跳过,避免对已卸载 runtime 的 fiber 再 refresh(JS Map 迭代对移除条目
+            // 不再访问,这里对齐该语义)。
+            if (!this.ctx.registry.has(runtime.callback)) continue;
             for (Fiber fiber : runtime.fibers) {
                 boolean hasUpdate = false;
                 for (String name : names) {

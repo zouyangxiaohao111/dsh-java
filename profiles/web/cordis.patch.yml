@@ -1,0 +1,33 @@
+# dshj web profile user patch layer (M8) — applied after dsh-base + dsh-web-app bundle layers.
+#
+# M8 boundary: the Java core hosts the dsh host-plane web plugins (webserver /
+# api-gateway / web-runtime / storage / workspace / client module system); the
+# browser-plane ui-* rows are loaded too (their node halves are host-safe and
+# feed the client-modules boot manifest). Rows pinned here are the honest
+# boundary: deep features that need a seam the Java host does not yet provide,
+# or host-plane surfaces that cannot run headless. Each pin records why.
+- id: code-runtime
+  disabled: true
+  # Code Mode worker-thread sandbox: spawns a dedicated worker_thread code
+  # execution runtime (OS-level sandboxing/landlock). Pinned on the Java host
+  # for now — the task's "deep feature" boundary; enabling it needs a worker
+  # sandbox seam. The frontend renders without it (native tools only).
+
+- id: client-hmr
+  disabled: true
+  # Client-plugin HMR reload chain: idle until a rebuild watcher (pnpm run
+  # dev:web) rewrites client bundles. No dev watcher in the Java-hosted boot,
+  # so the chain is permanently idle; pinned to keep the tree honest.
+
+- id: typert-loader
+  disabled: true
+  # typert typed-protocol contributor loader: apply scans ctx.loader.entries()
+  # and subscribes to internal/plugin reading fiber.entry.options.name — a
+  # client/host-loader internals surface (the Java core owns loading, not the
+  # worker). M7-8 already established typert as client-only; pinned here.
+
+- id: typert-gateway
+  disabled: true
+  # typert client API gateway (@deepseek-ai/dsh-api-gateway, the typed-protocol
+  # transport for browser↔host typert RPC). Client-only surface (M7-8 pin);
+  # the web UI uses the @deepseek-ai/dsh-host-apiproxy gateway instead.

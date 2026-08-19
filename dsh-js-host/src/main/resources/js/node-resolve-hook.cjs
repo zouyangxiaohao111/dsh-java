@@ -22,10 +22,20 @@ const { pathToFileURL } = require('node:url')
 /** 拦截目标:真实 dsh 插件 import 的 cordis 包名。 */
 const CORDIS_SPECIFIER = '@deepseek-ai/cordis'
 
+/**
+ * M8:拦截 Node 内置 `node:process`。实测 Node 24 Windows —— worker 的 stdin 桥(reader
+ * 线程阻塞读 FD 0 / 主线程异步读 process.stdin)在桥侧活跃时,`import process from
+ * 'node:process'` 会死锁(内置 process 模块初始化与活跃的 stdin 读冲突;commander 15 的
+ * ESM 图经 web-startup 触发)。resolve 钩子把它指到进程外 shim(node-process-shim.mjs,
+ * 惰性 re-export globalThis.process),绕过内置初始化路径 —— 通用机制(同 cordis shim)。
+ */
+const PROCESS_SPECIFIER = 'node:process'
+
 module.exports = {
   /**
    * resolve 钩子:裸 specifier '@deepseek-ai/cordis' → 返回 Java 桥 shim 的 URL,
-   * `shortCircuit: true` 停止后续解析(优先于 vendor/dsh 的本地 node_modules)。
+   * `node:process` → 返回进程 shim 的 URL(DSH_PROCESS_SHIM),`shortCircuit: true`
+   * 停止后续解析(优先于 vendor/dsh 的本地 node_modules / 内置模块)。
    * 其余 specifier(含其它 @deepseek-ai/* 包)交给原生解析 —— 它们继续从 dsh
    * 包自身的 node_modules(pnpm workspace 符号链接)解析。
    *
@@ -40,6 +50,12 @@ module.exports = {
   resolve(specifier, context, nextResolve) {
     if (specifier === CORDIS_SPECIFIER) {
       const shim = process.env.DSH_CORDIS_SHIM
+      if (shim && shim.length > 0) {
+        return { url: pathToFileURL(shim).href, shortCircuit: true }
+      }
+    }
+    if (specifier === PROCESS_SPECIFIER) {
+      const shim = process.env.DSH_PROCESS_SHIM
       if (shim && shim.length > 0) {
         return { url: pathToFileURL(shim).href, shortCircuit: true }
       }

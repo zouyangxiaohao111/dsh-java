@@ -65,9 +65,12 @@ class AgentFusionOverlayTest {
                 Map<String, Object> probe = map(probeObj);
 
                 // 1. @deepseek-ai/cordis — the shim (Service / Context, plus the surface the
-                //    @deepseek-ai/dsh-agent overlay needs: FiberState / getTraceable / symbols).
+                //    @deepseek-ai/dsh-agent overlay needs: FiberState / getTraceable / symbols;
+                //    M8 adds the surface real dsh web bundles import: Inject (decorator),
+                //    composeError (loader), Logger (logger-console static formatting)).
                 assertThat(probe.get("cordis")).asList()
-                        .containsExactlyInAnyOrder("Context", "Service", "FiberState", "getTraceable", "symbols");
+                        .containsExactlyInAnyOrder("Context", "Service", "FiberState", "getTraceable",
+                                "symbols", "Inject", "composeError", "Logger");
                 // 2. @deepseek-ai/dsh-llm — root + /message (real isTokenDelta runs).
                 assertThat(((Number) probe.get("llmExports")).longValue()).isGreaterThan(5);
                 assertThat(probe.get("llmMessageHasTokenDelta")).isEqualTo(true);

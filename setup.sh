@@ -68,8 +68,34 @@ else
   exit 1
 fi
 
+echo "[dshj setup] 5/6 构建 dsh client lib + web 前端 dist(M8 真实 dsh UI)..."
+# M8:真实 web UI 需要 client 包 lib/(浏览器模块系统 + node 半)与 apps/web 的 vite dist。
+# build:lib:client(tsc -b tsconfig.client.json + tsdown client face)build 全部 client 包;
+# build:web 对 apps/web 跑 vite build → dist/。两者任一失败 → 真实 UI 不可用(诚实报错)。
+if ! run_pnpm --config.verify-deps-before-run=false build:lib:client; then
+  echo "[dshj setup] 错误: build:lib:client 失败(真实 web UI 需要 client 包 lib/)。"
+  echo "  修复后重跑;headless/cli profile 不受影响。"
+  exit 1
+fi
+if ! run_pnpm --config.verify-deps-before-run=false build:web; then
+  echo "[dshj setup] 错误: build:web 失败(真实 web UI 需要 apps/web dist/)。"
+  echo "  修复后重跑;headless/cli profile 不受影响。"
+  exit 1
+fi
+WEB_DIST="vendor/dsh/apps/web/dist/index.html"
+if [ -f "$WEB_DIST" ]; then
+  echo "[dshj setup] web 前端 dist 就位($WEB_DIST)。"
+else
+  echo "[dshj setup] 错误: build:web 后 dist/index.html 仍缺失。"
+  exit 1
+fi
+
+echo "[dshj setup] 6/6 链接 web profile node_modules junctions(M8 裸模块解析)..."
+node "$DIR/scripts/link-web-profile.mjs" || exit 1
+
 echo
 echo "[dshj setup] 完成。接下来:"
 echo "  ./dshj --help                        # CLI 帮助(web/headless/cli 任意 profile)"
-echo "  ./dshj web boot                      # boot 默认 web profile(Java+Node 混排),起 :8080 状态页"
+echo "  ./dshj web boot                      # boot 真实 dsh web UI(dsh-base+dsh-web-app,默认 :3080,"
+echo "                                          --port <n> 覆盖),浏览器打开真实 agent 界面"
 echo "  ./dshj plugin --profile web add <spec>  # 插件 add(安装 M6-7)"

@@ -37,7 +37,9 @@ public final class JsIterable implements Iterable<Object>, Iterator<Object> {
     @Override public Iterator<Object> iterator() { return this; }
 
     @Override public boolean hasNext() {
-        if (done) return false;
+        // M8 low ④:release 后守卫 —— 句柄已释放(显式 release / 遍历终结),不再跨桥调用
+        // worker(已删除的 objById 条目会回 "unknown handle")。按遍历终结语义返回 false。
+        if (released || done) return false;
         if (!hasCached) {
             Object step = host.invokeObj(handle, "next", List.of());
             if (step instanceof Map<?, ?> m) {
@@ -54,9 +56,9 @@ public final class JsIterable implements Iterable<Object>, Iterator<Object> {
     }
 
     @Override public Object next() {
-        if (done) throw new NoSuchElementException();
+        if (released || done) throw new NoSuchElementException();
         if (!hasCached) hasNext();
-        if (done) throw new NoSuchElementException();
+        if (released || done) throw new NoSuchElementException();
         hasCached = false;
         return cachedValue;
     }

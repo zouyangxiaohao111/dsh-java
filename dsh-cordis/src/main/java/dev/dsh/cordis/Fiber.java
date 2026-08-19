@@ -27,6 +27,11 @@ public final class Fiber {
     public final Map<String, Object> inject;
     /** Shared plugin runtime; null for the root fiber. */
     public final Plugin.Runtime runtime;
+    /** M8:loader entry(镜像 cordis fiber.entry —— dsh-client-modules / typert 的
+     *  {@code internal/plugin} 监听读 {@code fiber.entry?.options.name} 识别条目)。
+     *  Java 核心 owns 加载,worker 侧无自建条目 → null(cordis 语义:非 loader 挂载的 fiber
+     *  无 entry;`?.` 短路,监听器安全跳过)。 */
+    public Object entry;
     /** Current lifecycle state. */
     public volatile FiberState state = FiberState.PENDING;
     /** Snapshot of required service impls while loaded. */

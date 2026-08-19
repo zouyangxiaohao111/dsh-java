@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/JDK-25-0080FF?style=flat&logo=openjdk&logoColor=white" alt="JDK 25">
   <img src="https://img.shields.io/badge/构建-Gradle%209.7-02303A?style=flat&logo=gradle&logoColor=white" alt="Gradle 9.7">
-  <img src="https://img.shields.io/badge/测试-329%20全绿-2EA44F?style=flat" alt="329 tests green">
+  <img src="https://img.shields.io/badge/测试-330%20全绿-2EA44F?style=flat" alt="330 tests green">
   <img src="https://img.shields.io/badge/GraalJS-24.1-3DDC84?style=flat" alt="GraalJS">
   <img src="https://img.shields.io/badge/license-MIT-2EA44F?style=flat" alt="MIT License">
 </p>
@@ -73,8 +73,8 @@ dsh-java 用 JDK 25 把这套语义**忠实复刻成 Java**,再架一座 JS 桥,
 git clone https://github.com/zouyangxiaohao111/dsh-java.git
 cd dsh-java
 ./setup.sh           # ① 拉 vendor/dsh 子模块 → ② pnpm install(deps) → ③ build:lib:host(host lib)
-./gradlew test       # 329 测试全绿
-./dshj web boot      # boot 默认 web profile → 打开 http://127.0.0.1:8080/
+./gradlew test       # 330 测试全绿
+./dshj web boot      # boot 真实 dsh web UI → 打开 http://127.0.0.1:3080/
 ```
 
 `./setup.sh` 三步体验(M6-5c 实测,exit 0):
@@ -97,17 +97,30 @@ cd dsh-java
 
 ```sh
 ./dshj --help                            # 帮助(web/headless/cli 任意 profile)
-./dshj web boot                          # boot 默认 web profile(Java+Node 混排),起 :8080 状态页
+./dshj web boot                          # boot 真实 dsh web UI(dsh-base+dsh-web-app),默认 :3080
+./dshj web boot --port 8080              # 覆盖端口
 ./dshj --profile headless boot           # 指定 profile
 ./dshj plugin --profile web add <spec>   # 插件 add:jar:<maven/路径> 从 MavenLocal/Central 装;
                                         #   java:<目录|github:|git+> 装源码(JS 侧走真实 dsh plugin add)
 ```
 
 - `profiles/<name>/cordis.yml` 声明插件集;`$DSH_HOME` 可覆盖 profile 根(镜像 dsh)。
-- 任意 `./dshj <profile> boot` 都起 HTTP 状态页(`http://127.0.0.1:8080/`,`--port` 可覆盖),
-  显示:harness 名 + 已加载插件列表(Java/Node/GraalJS 宿主标签)+ 桥基址 + 启动日志
-  (M6-5a)。web profile 混排 Java 插件(`counter[JAVA]`)与真实 dsh 插件
-  (`@deepseek-ai/dsh-system-prompt[NODE]`,经桥注册 `ctx.systemPrompt` 进 Java 核心, M6-5b)。
+- **M8:`./dshj web boot` boot 真实 dsh web profile,首页返回真实 dsh agent UI shell**。
+  web profile = dsh-base + dsh-web-app bundle(`profiles/web/package.json` 声明
+  `dsh.profile.bundles`),Java 核心作唯一运行时经桥宿主 **99 个真实 dsh 插件**:
+  webserver(`@deepseek-ai/dsh-host-webserver`,node:http,默认 :3080,`--port` 覆盖)、api-gateway
+  (`@deepseek-ai/dsh-host-apiproxy`,聚合 sessions/agents/llm/tools 等 ctx 服务)、存储/workspace/
+  session-stats/client 模块系统(dsh-client-modules 注入 `window.__DSH_BOOT__` 完整客户端插件
+  花名册)。`curl http://127.0.0.1:3080/` 返回**真实 DeepSeek Harness HTML**(非状态页)+ 完整
+  boot manifest。`--port` 经 `ctx.cmdlineArgs` 传 web-startup(Java 核心作 launcher provide
+  cmdlineArgs/appExit)。
+  **诚实边界**:/plugins/<id>/client.js 与 /api 传输在"每插件一个 worker"下跨 worker 路由死锁
+  (route handler 与 node:http req/res 跨 worker 边界)—— 首页真实 UI + 花名册可 serve,客户端
+  插件 bundle 与 API 传输需共享 worker seam(见 `docs/m8-1/` §5)。深度边界(Code Mode worker-thread
+  沙箱、client HMR dev watcher)经 `profiles/web/cordis.patch.yml` 用户层钉住并记录。
+- 非 webServer profile(如 headless/任意 cordis.yml profile)仍起 M6-5a HTTP 状态页
+  (`http://127.0.0.1:8080/`,`--port` 可覆盖):harness 名 + 已加载插件列表(Java/Node/
+  GraalJS 宿主标签)+ 桥基址 + 启动日志。
 - **dsh 生态全链路(M7-1)**:真实 dsh CLI 装、我们跑 —— `DSH_HOME=<d> dsh plugin --profile demo
   add <包>` 在 `$DSH_HOME/profiles/demo/` 写 manifest(`dsh.profile.bundles`)+ 用户
   `cordis.patch.yml` 层 + `node_modules`;然后 `DSH_HOME=<d> ./dshj --profile demo boot` 经

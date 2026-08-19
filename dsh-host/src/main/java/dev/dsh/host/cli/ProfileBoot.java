@@ -5,6 +5,7 @@ import dev.dsh.cordis.js.JsHostFactory;
 import dev.dsh.cordis.js.PluginRuntimeResolver;
 import dev.dsh.cordis.loader.DshProfileReader;
 import dev.dsh.cordis.loader.Entry;
+import dev.dsh.cordis.loader.EntryTree;
 import dev.dsh.cordis.loader.LoadedPlugin;
 import dev.dsh.cordis.loader.PluginLoaderService;
 import dev.dsh.cordis.reload.UrlPluginClassLoaderFactory;
@@ -16,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 应用层 profile boot(m6-design §4):解析 profile 目录 → 经 {@link PluginLoaderService}
@@ -55,6 +57,25 @@ public final class ProfileBoot {
             } finally {
                 ctx.fiber.dispose().join();
             }
+        }
+    }
+
+    /**
+     * M8 启动器事实:{@code ctx.cmdlineArgs} 服务的 Java 侧形状 —— 只读内参数列表,
+     * 经 {@code get()} 暴露(worker 侧 {@code ctx.cmdlineArgs.get()} → ServiceInvoker
+     * 反射调用)。{@code java.util.function.Consumer} 的 {@code appExit} 直接经 {@code $call}
+     * 桥(worker {@code exit(code)} → {@code accept(code)})。
+     */
+    public static final class CmdlineArgs {
+        private final List<String> args;
+
+        CmdlineArgs(List<String> args) {
+            this.args = List.copyOf(args);
+        }
+
+        /** dsh cmdlineArgs.get():返回内参数(argv 顺序)。 */
+        public List<String> get() {
+            return args;
         }
     }
 
@@ -101,6 +122,21 @@ public final class ProfileBoot {
      * @throws BootException profile 目录/配置不存在
      */
     public Handle bootOnce(String profile, PrintStream out) {
+        return bootOnce(profile, List.of(), out);
+    }
+
+    /**
+     * 加载一个 profile 的插件树,把启动器内参数作为 dsh {@code cmdlineArgs} 服务提供
+     * (镜像真实 dsh 启动器:launcher 只解析自己的 flag,之后原样交给树;app 插件经
+     * {@code ctx.cmdlineArgs.get()} 读,如 web-startup 的 {@code --port} 族)。
+     *
+     * @param profile profile 名(web/headless/cli 或任意 {@code profiles/<name>})
+     * @param appArgs boot 之后的内参数(原样,不经启动器解析)
+     * @param out     进度输出流
+     * @return boot 句柄
+     * @throws BootException profile 目录/配置不存在
+     */
+    public Handle bootOnce(String profile, List<String> appArgs, PrintStream out) {
         if (profile == null || profile.isBlank()) {
             throw new BootException("--profile needs a name");
         }
@@ -125,21 +161,34 @@ public final class ProfileBoot {
         // URL。核心默认 null(仅测试设置),真实 boot 未设 → hmr apply "Invalid URL"。以 profile
         // 目录的 file:// URL 作为 baseUrl(镜像真实 dsh:ctx.baseUrl = 插件加载位置)。
         root.baseUrl = profileDir.toUri().toString();
+        // M8:启动器事实 —— cmdlineArgs(只读内参数)+ appExit(请求退出)。真实 dsh 由 launcher
+        // 在树挂载前 provide;Java 核心就是 launcher,故在应用层(dsh-host,不动核心)provide。
+        // dsh-web-app/startup 的 parseCmdline 两者都读,缺任一 → apply 抛错。
+        List<String> frozenArgs = List.copyOf(appArgs == null ? List.of() : appArgs);
+        root.provide("cmdlineArgs", new CmdlineArgs(frozenArgs));
+        root.provide("appExit", (java.util.function.Consumer<Integer>) code ->
+                logOut.println("dshj: appExit(" + code + ") requested (launcher shutdown is Ctrl+C)"));
         PluginLoaderService loader = new PluginLoaderService(root,
                 new PluginRuntimeResolver(new JsHostFactory(bases)),
                 new UrlPluginClassLoaderFactory(), outputDir(), new JsHostFactory(bases));
         try {
             List<LoadedPlugin> loaded;
+            List<Entry> composedEntries;
             if (Files.isRegularFile(yml)) {
                 // M6-4 起始形状:cordis.yml(Java harness 插件树)
+                composedEntries = EntryTree.parse(yml).flatten();
+                // M8:dsh-client-modules 读 ctx.loader.entries() 扫描 dsh.client 包 → 浏览器
+                // boot manifest。在加载前注入组合条目(modules apply 时即可读到真实条目)。
+                root.loader.setEntries(loaderEntryObjects(composedEntries));
                 loaded = loader.load(yml);
                 logOut.println("dshj: profile '" + profile + "' booted (" + yml + "):");
             } else {
                 // M6-6 dsh profile:读 manifest → 组合 bundle patch 层 → entries → loader 加载。
                 // bundle 第一 anchor = vendor/dsh 安装(package.json);缺则仅 profile 自身。
                 Path installAnchor = repoRoot.resolve("vendor/dsh/package.json");
-                List<Entry> entries = new DshProfileReader().load(profileDir, installAnchor);
-                loaded = loader.loadEntries(entries, profileDir);
+                composedEntries = new DshProfileReader().load(profileDir, installAnchor);
+                root.loader.setEntries(loaderEntryObjects(composedEntries));
+                loaded = loader.loadEntries(composedEntries, profileDir);
                 logOut.println("dshj: profile '" + profile + "' booted (dsh profile " + profileDir + "):");
             }
             for (LoadedPlugin lp : loaded) {
@@ -162,6 +211,26 @@ public final class ProfileBoot {
 
     private static void addIfDirectory(List<Path> out, Path p) {
         if (Files.isDirectory(p)) out.add(p.toAbsolutePath().normalize());
+    }
+
+    /**
+     * M8:把组合条目转成 worker 可读的 loader entry 形状。dsh-client-modules 的
+     * {@code processOne} 把 {@code entry.options.name} 当<b>包说明符</b>解析
+     * ({@code require.resolve('<name>/package.json')} 扫 dsh.client 声明)→ 用
+     * {@link Entry#source()}(patch 的 {@code name} = {@code @deepseek-ai/dsh-client-ui-*}),
+     * 不是条目的 {@code id}(ui-conversation)。{@code fiber} 真值占位(条目在树里)、
+     * {@code disabled} 假。
+     */
+    private static List<Object> loaderEntryObjects(List<Entry> entries) {
+        List<Object> out = new ArrayList<>();
+        for (Entry e : entries) {
+            String spec = e.source() != null && !e.source().isBlank() ? e.source() : e.name();
+            out.add(Map.of(
+                    "options", Map.of("name", spec),
+                    "fiber", Boolean.TRUE,
+                    "disabled", Boolean.FALSE));
+        }
+        return out;
     }
 
     /**

@@ -3,6 +3,7 @@ package dev.dsh.host.cli;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 
 /**
@@ -97,36 +98,45 @@ public final class DshCli {
     static final int DEFAULT_WEB_PORT = 8080;
 
     /** boot 一个 profile:加载插件树 → 打印概览 → 阻塞运行(Ctrl+C 卸载)。
-     *  web profile 额外启动 HTTP 状态页(M6-5a),浏览器打开即可看到 harness/profile/
-     *  已加载插件/桥基址/启动日志。 */
+     *  <p>M6-5a 起:非 webServer profile boot 后启动 HTTP 状态页,浏览器打开即可看到
+     *  harness/profile/已加载插件/桥基址/启动日志。
+     *  <p>M8 起:webServer 服务存在(真实 dsh web profile,经 dsh 插件 webserver 宿主)
+     *  → 不启动状态页(避免 shadow 前端),打印 dsh webserver 的真实 URL —— 浏览器打开的
+     *  是真实 dsh agent UI(前端 dist 由 web-runtime 的 frontend-static fallback 提供)。 */
     private static int runBoot(String profile, List<String> appArgs, PrintStream out, PrintStream err) {
         ProfileBoot boot = new ProfileBoot();
         try {
-            ProfileBoot.Handle handle = boot.bootOnce(profile, out);
+            ProfileBoot.Handle handle = boot.bootOnce(profile, appArgs, out);
             out.println();
             out.println("dshj: profile '" + profile + "' is running on the Java harness. Ctrl+C to stop.");
-            // M7-1:HTTP 状态页对任意 profile 生效(不再限定 web)——boot 成功即可在
-            // http://127.0.0.1:8080/ 看到该 profile 已加载的插件列表/桥基址/启动日志。
-            WebStatusServer server = null;
-            {
+            if (!appArgs.isEmpty()) {
+                out.println("dshj: app args passed to the profile: " + appArgs);
+            }
+            WebStatusServer srv = null;
+            // M8:真实 dsh webserver 插件已宿主(ctx.webServer 服务在)——跳过 Java 状态页,
+            // 打印真实 UI 的 URL。URL 端口读 webServer 服务的 port getter(跨桥 live 句柄),
+            // 读失败回退 dsh 默认 3080 / --port。
+            if (hasService(handle, "webServer")) {
+                int port = webServerPort(handle, parsePort(appArgs));
+                out.println("dshj: dsh web UI at http://127.0.0.1:" + port + "/");
+            } else {
+                // M6-5a:状态页对任意 profile 生效(不再限定 web)——boot 成功即可在
+                // http://127.0.0.1:8080/ 看到该 profile 已加载的插件列表/桥基址/启动日志。
                 int port = parsePort(appArgs);
                 try {
-                    server = new WebStatusServer(profile, handle, port);
-                    server.start();
-                    out.println("dshj: web status page at http://127.0.0.1:" + server.port() + "/");
+                    srv = new WebStatusServer(profile, handle, port);
+                    srv.start();
+                    out.println("dshj: web status page at http://127.0.0.1:" + srv.port() + "/");
                 } catch (IOException e) {
                     out.println("dshj: web status server failed to start on port " + port + ": "
                             + e.getMessage());
                 }
             }
-            if (!appArgs.isEmpty()) {
-                out.println("dshj: app args passed to the profile: " + appArgs);
-            }
-            WebStatusServer srv = server;
+            WebStatusServer server = srv;
             CountDownLatch latch = new CountDownLatch(1);
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try {
-                    if (srv != null) srv.close();
+                    if (server != null) server.close();
                 } finally {
                     try {
                         handle.close();
@@ -144,6 +154,30 @@ public final class DshCli {
             err.println("dshj: " + e.getMessage());
             return 1;
         }
+    }
+
+    /** ctx 是否有某服务(经 getService 非 NO_SERVICE 判定;JS 桥语义下缺服务 → undefined)。 */
+    private static boolean hasService(ProfileBoot.Handle handle, String name) {
+        return handle.ctx().getService(name) != dev.dsh.cordis.Context.NO_SERVICE;
+    }
+
+    /**
+     * 读 webServer 服务当前监听端口:getService 返回 worker 提供的 live 句柄(Map 门面,
+     * M7-8),成员 {@code port} 是 getter → Map.get("port") 触发 invokeGet 跨桥读值。
+     * 读失败(句柄类型不符/超时)回退 {@code fallback}(--port 或 dsh 默认 3080)。
+     */
+    @SuppressWarnings("unchecked")
+    private static int webServerPort(ProfileBoot.Handle handle, int fallback) {
+        try {
+            Object svc = handle.ctx().getService("webServer");
+            if (svc instanceof Map<?, ?> m && m.get("port") instanceof Number n) {
+                int p = n.intValue();
+                if (p > 0 && p < 65536) return p;
+            }
+        } catch (Throwable ignored) {
+            // 跨桥读失败 → 回退
+        }
+        return fallback > 0 ? fallback : 3080;
     }
 
     /**
