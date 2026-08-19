@@ -112,7 +112,7 @@ cd dsh-java
   add <包>` 在 `$DSH_HOME/profiles/demo/` 写 manifest(`dsh.profile.bundles`)+ 用户
   `cordis.patch.yml` 层 + `node_modules`;然后 `DSH_HOME=<d> ./dshj --profile demo boot` 经
   `DshProfileReader` 组合 bundle patch 层 → PluginLoaderService 经 Node 桥加载,状态页可见
-  新增包。dsh-base 全量核心树(78 行)在 M7-7 后 67/78 注册、65/78 真正 apply(M7-7 句柄
+  新增包。dsh-base 全量核心树(78 行)在 M7-8 后 **73/78 注册**(M7-8 provide 服务句柄化 + ctx.fiber/ctx.loader 解最后 6 行,只剩 typert 客户端专属;M7-7 句柄
   扩展:迭代器/递归 live 对象/发射器 + cordis-shim getter 修复,解钉 settings + pwsh×2 +
   tools;`tools` 枢纽解钉级联激活 17 行 PENDING → ACTIVE),剩余边界行用户层按 dsh patch
   机制(id 定向 `disabled`)钉住,见 `docs/m7-4/m7-4-tree-load-map.md`。
@@ -156,6 +156,7 @@ root.emit("app/ready", "started");       // 触发 JS
 | **M7-5** | 配置通道修补(schemastery/zod 默认化 + `!!js` 求值)+ 整树零配置复核 | ✅ |
 | **M7-6** | fiber 隔离(兄弟服务可见)+ 桥值序列化(循环/Symbol/fn 句柄/mixin/子路径)+ disabled 通道 `!!js` 求值 + 遗留小项清理;整树复核:63/78 注册、44/78 真正 apply(13 行 C 组解钉) | ✅ |
 | **M7-7** | 通用句柄扩展(迭代器/递归 live 对象/发射器跨桥)+ cordis-shim Service getter 修复;整树复核:67/78 注册、65/78 真正 apply(`tools` 枢纽解钉级联激活 17 行 + settings/pwsh×2 解钉) | ✅ |
+| **M7-8** | provide 通道服务句柄化(服务值=live 句柄,方法/getter 跨 worker 可调)+ ctx.fiber/ctx.loader/ctx.baseUrl;整树复核:**73/78 注册**(最后 6 行 hmr/session-persistence/permission/goal-round/plan-mode/agent-loop 解钉,只剩 typert 客户端专属) | ✅ |
 
 ```
 Java 核心(dev.dsh.cordis)      ← 唯一不可替换

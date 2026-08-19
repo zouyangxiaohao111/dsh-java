@@ -1,20 +1,18 @@
 # M7-4 — dsh-base 全量核心树加载地图(实证"配置即用"边界)
 
-里程碑:M7-4 + M7-5 + M7-6 + M7-7 复核。日期:2026-08-18。实证记录(非臆测)。
+里程碑:M7-4 + M7-5 + M7-6 + M7-7 + M7-8 复核。日期:2026-08-18/19。实证记录(非臆测)。
 
-结论:**"核心 = Java cordis + 其他全是 dsh + 配置即用"成立到 67/78 行注册、65/78 行真正 apply
-(round-m7-7-final-clean 复核)**。M7-7 句柄扩展(迭代器 + 递归 live 对象 + 发射器 + cordis-shim getter 修复)
-让 4 行 C/D 组解钉(settings、pwsh-sandbox、tool-pwsh 因 shim getter 修复,**tools** 因迭代器/递归
-live 对象 + 一次核心 notify 重入修复),且 **`tools` 是整树的枢纽**:它一旦加载,17 行原本 PENDING
-(注册但 inject `tools` 未满足)的行批量进入 ACTIVE。整树照常 boot 到 HTTP 状态页(证据:
-`docs/m7-4/m7-4-full-boot.log`,round-m7-7-final-clean)。
+结论:**"核心 = Java cordis + 其他全是 dsh + 配置即用"成立到 73/78 行注册(round-m78-mine 复核)**。
+M7-8 provide 通道服务句柄化(provide 的 service 值 = live 句柄,方法/getter 跨 worker 可调)+
+ctx.fiber 跨桥 + ctx.loader/ctx.baseUrl,让最后 6 行解钉:**hmr / session-persistence-jsonl /
+permission / goal-round-driver / plan-mode / agent-loop 全部加载**,并连带激活
+session-checkpoint-policy(依赖 sessionPersistence)。整树照常 boot 到 HTTP 状态页,EXIT=124
+(server 常驻,预期),无失败行(证据:round-m78-mine.log,73 行注册)。只剩 2 钉:typert / typert-gateway
+(web-client-only,loader 建模,D 组设计如此,不在 host 跑)+ 3 base 禁用。
 
-> **诚实修正(M7-7 复核)**:目标 63→70+,实测边界是 **67/78 注册、65/78 apply**。M7-7 句柄扩展
-> 解决了 4 行 + 级联激活 17 行;剩余的 8 行钉里有 4 行(session-persistence-jsonl / goal-round-driver /
-> plan-mode / agent-loop)仍需 **provide 通道的服务句柄化**(跨 worker 服务方法调用 —— M7-6 §7 已
-> 记为"独立桥面工作项"),M7-7 只完成了方法**返回**的句柄化,未做 provide 值本身。另 2 行
-> (typert/typert-gateway)是 web-client-only(loader 建模),hmr 缺 `ctx.loader`,permission 的 shim
-> getter 已修但暴露新的功能检查失败(见 §4)。**70+ 未达成的原因逐行记录,不夸大。**
+> **诚实修正(M7-8 复核)**:目标 67→73+ 达成(**73/78 注册**,+6)。M7-7 解决了 4 行 + 级联激活 17 行;
+> M7-8 把剩余的 8 行钉从 8 减到 2(仅客户端专属 typert 对),6 行全部经 provide 服务句柄化 +
+> ctx.fiber/ctx.loader/baseUrl 解钉。**70+ 达成,原因逐行记录,不夸大。**
 
 ## 1. 实验设置(与 M7-1 同形,反向:全量不 disable)
 
