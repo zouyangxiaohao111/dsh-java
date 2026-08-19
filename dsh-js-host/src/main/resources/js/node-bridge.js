@@ -227,17 +227,21 @@ const GLOBAL_FN_ID_BASE = 200_000_000
 
 /** 是否可迭代对象(非数组):有 Symbol.iterator 可调(Set/Map/generator/...),或是一个
  *  真正的迭代器对象(经 iterable 的 [Symbol.iterator]() 产生的原型非 Object.prototype)。
- *  收紧(M8 low ①):带 next() 的纯数据对象(原型 = Object.prototype,如 { next: fn, ... }
- *  配置/数据容器)不再被句柄化 —— 否则它们会被当作迭代器跨桥为 JsIterable,丢失数据面。 */
+ *  收紧(M8 low ①):纯数据对象(原型 = Object.prototype / null)即使带 next()/Symbol.iterator
+ *  成员(如 { next: fn, [Symbol.iterator]: fn } 配置/数据容器)也不再被句柄化 —— 一律按 JSON
+ *  跨桥,否则它们会被当作迭代器跨桥为 JsIterable,丢失数据面。真迭代器/可迭代(Set/Map/生成器、
+ *  自定义可迭代类实例)的原型链都非普通 Object.prototype,不受影响。 */
 function isIteratorLike(v) {
   if (v === null || typeof v !== 'object') return false
   if (Array.isArray(v)) return false   // 数组仍是数据(JSON array),Java 侧 List
-  if (typeof v[Symbol.iterator] === 'function') return true
-  // 无 Symbol.iterator 的对象只有"真迭代器对象"才认(原型非普通 Object):纯数据对象
-  // 带 next() 成员(如 { next: fn } 数据)是数据不是迭代器。
-  if (typeof v.next !== 'function') return false
   const proto = Object.getPrototypeOf(v)
-  return proto !== null && proto !== Object.prototype
+  // 普通对象(原型 = Object.prototype / null)是数据容器:next()/Symbol.iterator 都是普通
+  // 数据成员,不是迭代器协议证据 —— 按 JSON 跨桥。
+  if (proto === null || proto === Object.prototype) return false
+  // 真迭代器协议(原型非普通):next() 为函数(迭代器对象)或 Symbol.iterator 可调(Set/Map/
+  // 生成器/custom 可迭代类)。
+  if (typeof v.next === 'function') return true
+  return typeof v[Symbol.iterator] === 'function'
 }
 
 /** 是否 live 对象(类实例 / 带原型方法):原型链上有非 Object.prototype 的 function 成员。 */

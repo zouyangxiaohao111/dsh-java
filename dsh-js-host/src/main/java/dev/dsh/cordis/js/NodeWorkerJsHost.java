@@ -93,9 +93,16 @@ public final class NodeWorkerJsHost implements JsHost {
 
     private final AtomicLong seq = new AtomicLong(1);
     private final AtomicLong serviceSeq = new AtomicLong(1_000_000);
-    /** M8 low ②:reader 线程句柄转发专用执行器(虚拟线程,JDK 25)——替代每次 new Thread。 */
+    /** M8 low ②:跨 worker 句柄转发专用固定大小 daemon 线程池 —— 复用线程、限制并发(原虚拟
+     *  线程每任务一线程,并发无界)。reader 线程只入队不阻塞;池线程阻塞等属主 worker 回复
+     *  (reader 线程继续泵消息,防互等死锁)。宿主 close() 时 shutdownNow 回收。 */
+    static final int REMOTE_FORWARD_POOL_SIZE = 4;
     private final java.util.concurrent.ExecutorService remoteForwardExecutor =
-            java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor();
+            java.util.concurrent.Executors.newFixedThreadPool(REMOTE_FORWARD_POOL_SIZE, r -> {
+                Thread t = new Thread(r, "dsh-remote-forward");
+                t.setDaemon(true);
+                return t;
+            });
 
     private final Thread readerThread;
     private final Thread deathWatcher;
@@ -715,9 +722,9 @@ public final class NodeWorkerJsHost implements JsHost {
         return exportRemoteDeep(invokeService(handle, method, javaArgs));
     }
 
-    /** reader 线程上的句柄转发:helper 虚拟线程阻塞等属主 worker 回复,reader 线程继续读
-     *  (防互等死锁)。M8 low ②:走 {@link #remoteForwardExecutor}(虚拟线程,每宿主一个执行器),
-     *  不再每次 new Thread。 */
+    /** reader 线程上的句柄转发:helper 池线程阻塞等属主 worker 回复,reader 线程继续读
+     *  (防互等死锁)。M8 low ②:走 {@link #remoteForwardExecutor}(固定大小 daemon 线程池,
+     *  每宿主一个执行器),不再每次 new Thread,限制并发。 */
     private void forwardRemoteAsync(JsonNode msg, long id) {
         remoteForwardExecutor.execute(() -> {
             try {
@@ -1057,7 +1064,7 @@ public final class NodeWorkerJsHost implements JsHost {
         bridges.clear();
         remoteObjects.clear();
         failAllPending("node worker closed");
-        // M8 low ②:回收 reader 句柄转发的虚拟线程执行器(close 后不再有入站消息需要转发)
+        // M8 low ②:回收 reader 句柄转发的固定大小线程池(close 后不再有入站消息需要转发)
         remoteForwardExecutor.shutdownNow();
     }
 

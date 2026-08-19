@@ -118,6 +118,48 @@ class HandleMechanismTest {
         root.fiber.dispose().join();
     }
 
+    // ---- 1b) M8 low ①:带 next()/Symbol.iterator 的普通数据对象仍按 JSON 跨桥(非句柄化) ----
+
+    /**
+     * 反例:纯数据对象(原型 = Object.prototype)即使带 next()/Symbol.iterator 成员也不句柄化
+     * —— 一律按 JSON 跨桥(数据面保留,Java 读得 Map),而不是被当作迭代器 {@link JsIterable}
+     * 句柄化而丢失数据面。真迭代器(生成器、Set/Map、自定义可迭代类)原型链非普通 Object 不受影响。
+     */
+    @Test
+    void plainDataObjectWithNextMethodCrossesAsJsonNotIterHandle() throws Exception {
+        Path plugin = writePlugin("plain-next-data.cjs", """
+                module.exports = {
+                  name: 'plain-next-data',
+                  apply(ctx) {
+                    // 带 next() 的普通数据对象(原型 = Object.prototype):是数据,不是迭代器
+                    ctx.provide('dataPlain', { kind: 'config', foo: 'bar', next: () => 'nope' })
+                    // 带 next() + Symbol.iterator 的普通数据对象:同样不是真迭代器,是数据
+                    ctx.provide('dataIter', {
+                      kind: 'config', foo: 'baz', next: () => 'nope',
+                      [Symbol.iterator]: () => ({ next: () => ({ done: true }) }),
+                    })
+                  }
+                }
+                """);
+        Context root = new Context();
+        try (NodeWorkerJsHost host = new NodeWorkerJsHost()) {
+            root.plugin(new JsPluginAdapter(host, host.loadModule(plugin)), null);
+
+            Object plain = root.get("dataPlain");
+            assertThat(plain).isInstanceOf(Map.class).isNotInstanceOf(JsIterable.class);
+            Map<String, Object> plainMap = map(plain);
+            assertThat(plainMap.get("kind")).isEqualTo("config");
+            assertThat(plainMap.get("foo")).isEqualTo("bar");
+            assertThat(plainMap.get("next")).isInstanceOf(NodeRef.class);   // next 是普通 fn 成员,非迭代器视图
+
+            Object it = root.get("dataIter");
+            assertThat(it).isInstanceOf(Map.class).isNotInstanceOf(JsIterable.class);
+            assertThat(map(it).get("kind")).isEqualTo("config");
+            assertThat(map(it).get("foo")).isEqualTo("baz");
+        }
+        root.fiber.dispose().join();
+    }
+
     // ---- 2) 方法返回 live 对象 → Java 得 RPC 代理(递归)----
 
     @Test
@@ -275,6 +317,59 @@ class HandleMechanismTest {
             assertThatThrownBy(() -> counter.call("value"))
                     .isInstanceOf(NodeBridgeError.class)
                     .hasMessageContaining("already released");
+        }
+        root.fiber.dispose().join();
+    }
+
+    // ---- 4b) M8 low ④:release 后 JsIterable 公共 API 走 released 守卫,抛明确错误 ----
+
+    /**
+     * release() 后 {@code hasNext()}/{@code next()} 经 released 检查抛明确的 "handle released"
+     * 错误 —— 而不是把已释放句柄再跨桥调用 worker(worker 侧 objById 已删除,回 "unknown obj
+     * handle",读方无诊断价值)。经 JsIterable 公共 API 断言:显式 release 后与遍历终结(自动
+     * release)后都一样抛 "handle released"。未释放的正常遍历不受影响(见前 4) 测试)。
+     */
+    @Test
+    void releasedJsIterablePublicApiThrowsHandleReleased() throws Exception {
+        Path plugin = writePlugin("release-api-plugin.cjs", """
+                module.exports = {
+                  name: 'release-api-plugin',
+                  apply(ctx) {
+                    const makeNums = () => {
+                      function* gen() { yield 1; yield 2; yield 3 }
+                      return gen()
+                    }
+                    ctx.provide('probe', { makeNums })
+                  }
+                }
+                """);
+        Context root = new Context();
+        try (NodeWorkerJsHost host = new NodeWorkerJsHost()) {
+            root.plugin(new JsPluginAdapter(host, host.loadModule(plugin)), null);
+            Map<String, Object> probe = map(root.get("probe"));
+            NodeRef makeNums = (NodeRef) probe.get("makeNums");
+
+            // 显式 release 后:hasNext()/next() 走 released 守卫,抛 "handle released"
+            JsIterable explicit = (JsIterable) host.invokeFn(makeNums, List.of());
+            assertThat(explicit.hasNext()).isTrue();
+            explicit.release();
+            assertThatThrownBy(explicit::hasNext)
+                    .isInstanceOf(NodeBridgeError.class)
+                    .hasMessageContaining("handle released");
+            assertThatThrownBy(explicit::next)
+                    .isInstanceOf(NodeBridgeError.class)
+                    .hasMessageContaining("handle released");
+
+            // 遍历终结(自动 release)后:hasNext()/next() 同样抛 "handle released",而不是
+            // 把已释放句柄跨桥(worker 侧 unknown handle)。
+            JsIterable exhausted = (JsIterable) host.invokeFn(makeNums, List.of());
+            for (Object ignored : exhausted) { /* 遍历到 done → 自动 release */ }
+            assertThatThrownBy(exhausted::hasNext)
+                    .isInstanceOf(NodeBridgeError.class)
+                    .hasMessageContaining("handle released");
+            assertThatThrownBy(exhausted::next)
+                    .isInstanceOf(NodeBridgeError.class)
+                    .hasMessageContaining("handle released");
         }
         root.fiber.dispose().join();
     }
