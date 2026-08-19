@@ -170,6 +170,8 @@ root.emit("app/ready", "started");       // 触发 JS
 | **M7-6** | fiber 隔离(兄弟服务可见)+ 桥值序列化(循环/Symbol/fn 句柄/mixin/子路径)+ disabled 通道 `!!js` 求值 + 遗留小项清理;整树复核:63/78 注册、44/78 真正 apply(13 行 C 组解钉) | ✅ |
 | **M7-7** | 通用句柄扩展(迭代器/递归 live 对象/发射器跨桥)+ cordis-shim Service getter 修复;整树复核:67/78 注册、65/78 真正 apply(`tools` 枢纽解钉级联激活 17 行 + settings/pwsh×2 解钉) | ✅ |
 | **M7-8** | provide 通道服务句柄化(服务值=live 句柄,方法/getter 跨 worker 可调)+ ctx.fiber/ctx.loader/ctx.baseUrl;整树复核:**73/78 注册**(最后 6 行 hmr/session-persistence/permission/goal-round/plan-mode/agent-loop 解钉,只剩 typert 客户端专属) | ✅ |
+| **M8-1** | 真实 dsh web UI(webserver+api-gateway+前端经核心 serve;首页返回真实 DeepSeek Harness shell + 99 插件经桥;已知边界:/api 跨 worker 路由死锁待解) | ✅ |
+| **M8-2** | 5 low gap 修复(isIteratorLike 收窄/线程池/JsIterable 守卫/Reflect 守卫/tools 语义证据) | ✅ |
 
 ```
 Java 核心(dev.dsh.cordis)      ← 唯一不可替换
