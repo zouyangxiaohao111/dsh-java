@@ -121,6 +121,10 @@ public final class ProfileBoot {
         PrintStream logOut = tee(out, startupLog);
 
         Context root = new Context();
+        // M7-8 C:ctx.baseUrl —— hmr 的 new URL(config.base || '.', ctx.baseUrl) 需要合法绝对
+        // URL。核心默认 null(仅测试设置),真实 boot 未设 → hmr apply "Invalid URL"。以 profile
+        // 目录的 file:// URL 作为 baseUrl(镜像真实 dsh:ctx.baseUrl = 插件加载位置)。
+        root.baseUrl = profileDir.toUri().toString();
         PluginLoaderService loader = new PluginLoaderService(root,
                 new PluginRuntimeResolver(new JsHostFactory(bases)),
                 new UrlPluginClassLoaderFactory(), outputDir(), new JsHostFactory(bases));
