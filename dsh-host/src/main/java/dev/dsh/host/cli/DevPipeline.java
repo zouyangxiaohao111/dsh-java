@@ -41,18 +41,33 @@ public final class DevPipeline implements AutoCloseable {
         this.repoRoot = repoRoot;
     }
 
-    /** 起两个 watcher 子进程(web dev 管线)。repoRoot 为仓库根(cwd)。 */
-    public void start() {
-        Path vendor = repoRoot.resolve("vendor/dsh");
-        spawn("dev-web (tsdown watch, client bundles)",
-                List.of("node", "--import", "tsx/esm", "scripts/dev-web.ts", "--poll"), vendor);
-        Path webApp = vendor.resolve("apps/web");
-        spawn("vite build --watch (frontend shell dist)",
-                List.of("node", "node_modules/vite/bin/vite.js", "build", "--watch"), webApp);
+    /** 一个 watcher 子进程规格(label + 命令 + cwd)。 */
+    record SpawnSpec(String label, List<String> command, Path cwd) {
     }
 
-    /** 起一个子进程:stderr 并入 stdout,输出逐行转写(watcher 无交互输入)。 */
-    private void spawn(String label, List<String> command, Path cwd) {
+    /** 两个 watcher 的启动规格 —— 测试 seam,start() 依序 spawn。 */
+    List<SpawnSpec> spawnSpecs() {
+        Path vendor = repoRoot.resolve("vendor/dsh");
+        Path webApp = vendor.resolve("apps/web");
+        return List.of(
+                new SpawnSpec("dev-web (tsdown watch, client bundles)",
+                        List.of("node", "--import", "tsx/esm", "scripts/dev-web.ts", "--poll"), vendor),
+                new SpawnSpec("vite build --watch (frontend shell dist)",
+                        List.of("node", "node_modules/vite/bin/vite.js", "build", "--watch"), webApp));
+    }
+
+    /** 起两个 watcher 子进程(web dev 管线)。repoRoot 为仓库根(cwd)。 */
+    public void start() {
+        for (SpawnSpec spec : spawnSpecs()) spawn(spec.label(), spec.command(), spec.cwd());
+    }
+
+    /** 当前存活子进程列表(测试 seam:断言 spawn 数 + close 后全部回收)。 */
+    List<Process> children() {
+        return children;
+    }
+
+    /** 起一个子进程:stderr 并入 stdout,输出逐行转写(watcher 无交互输入)。包可见(测试 seam)。 */
+    void spawn(String label, List<String> command, Path cwd) {
         try {
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.directory(cwd.toFile());

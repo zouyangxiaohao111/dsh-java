@@ -93,6 +93,13 @@ fi
 echo "[dshj setup] 6/6 链接 web profile node_modules junctions(M8 裸模块解析)..."
 node "$DIR/scripts/link-web-profile.mjs" || exit 1
 
+echo "[dshj setup] 7/7 构建 ./dshj 快速启动(installDist,免 gradle,M9-2)..."
+if "$DIR/gradlew" -p "$DIR" -q :dsh-host:installDist > /dev/null 2>&1; then
+  echo "[dshj setup] installDist 就位(./dshj 秒起)。"
+else
+  echo "[dshj setup] 警告: installDist 失败(./dshj 回退 gradle run,启动慢)。可重跑本步。"
+fi
+
 echo
 echo "[dshj setup] 完成。接下来:"
 echo "  ./dshj --help                        # CLI 帮助(web/headless/cli 任意 profile)"
