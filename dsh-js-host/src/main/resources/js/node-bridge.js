@@ -223,7 +223,10 @@ const fnById = new Map()  // id → JS function
 const modById = new Map() // id → 已加载模块(CJS exports / ESM namespace)
 const ctxById = new Map() // id → ctx shim
 const objById = new Map() // id → live 对象 / iterable 视图(M7-7,经 invokeObj RPC 调用)
-let nextHandle = 1
+// M11-6:每 worker 独立句柄 id 区间(Java 传 DSH_HANDLE_BASE,1M 起每 worker 1M):fn/obj/ctx
+// 本地 id 跨 worker 不冲突 → 读方 worker 的 objById/ctxById 不会误命中本地对象(实测
+// agentCtx 跨 worker 时 web 拿到本地 makeCtx,setup 读 .agent 得 undefined)。单测无 env → 1。
+let nextHandle = parseInt(process.env.DSH_HANDLE_BASE || '1', 10)
 
 // M7-8:全局句柄 id 基址(与 NodeWorkerJsHost GLOBAL_OBJ_ID_BASE / GLOBAL_FN_ID_BASE 对齐)。
 // Java 给跨 worker 句柄分配的 id 在此之上,远大于 worker 本地 nextHandle 计数;worker 据此
@@ -231,6 +234,11 @@ let nextHandle = 1
 // 处理防互等死锁)"。
 const GLOBAL_OBJ_ID_BASE = 100_000_000
 const GLOBAL_FN_ID_BASE = 200_000_000
+// M11-6:makeCtx 句柄标记 —— 序列化时识别"桥 ctx 代理"为 live 句柄({$kind:'obj'} 而非普通
+// 对象快照)。快照会丢失 ctx 的动态成员(Agent.ctx 的 .agent 是经 ctx.get 动态读的,不在
+// target 上)→ setup 跨 worker 读 agentCtx.agent 得 undefined。句柄化后 web 侧经 makeServiceProxy
+// 的 invokeGet 路由回属主(core)读 .agent。
+const CTX_MARK = Symbol.for('dsh.ctxId')
 
 // ---- 值序列化(worker → Java)----
 // 函数 → {$kind:'fn',id,length};普通值走 JSON。服务句柄({$kind:'svc',id} 与
@@ -356,10 +364,21 @@ function serializeValue(v, seen, opts) {
     const out = { $kind: 'fn', id }
     const len = v.length
     if (Number.isInteger(len)) out.length = len
+    // M11-6:async 标记 —— async fn 回调(如 agents.create 的 setup,内部 fs.stat/动态 import
+    // 依赖 macrotask)跨 worker 作为参数时,调用方方法必须异步(防同步泵饿死 macrotask →
+    // 互等死锁);同步 fn(registerProvider 的 create,纯逻辑)保持同步方法调用。
+    if (v.constructor && v.constructor.name === 'AsyncFunction') out.async = true
     return out
   }
   if (t === 'symbol') return { $kind: 'symbol' }
   if (t === 'object') {
+    // M11-6:桥 ctx 代理(makeCtx)→ ctx 句柄(读方经桥路由回属主 ctx,on/emit/get 等方法
+    // 与动态成员(agent 等)语义保持)。不用 obj 句柄 —— makeServiceProxy 的 $members 遍历
+    // 原型链,而 makeCtx 方法在 target(非原型)→ 枚举不到 → 成员全按方法处理,破坏 ctx 语义
+    // (实测 web-runtime/api-gateway route 未注册)。
+    if (v !== null && typeof v === 'object' && v[CTX_MARK] !== undefined) {
+      return { $kind: 'ctx', id: v[CTX_MARK] }
+    }
     // M7-8:live 对象优先于纯 iterable —— 带业务方法的可迭代服务(如 Service 的
     // list()/get() + Symbol.iterator)必须保留方法面({$kind:'obj'}),否则 iter 分支会吞掉
     // 方法(Java 侧只得 JsIterable,方法不可调)。纯生成器/迭代器(isPureIterator)仍走 iter
@@ -424,6 +443,11 @@ function deserializeValue(v) {
         // liveHandles:回调参数里的 live 对象(如 service 传的 AbortSignal)以句柄跨桥,属主
         // worker 之外仍可调方法(skill FileSystemSkillProvider 的 control.signal.addEventListener
         // 同形);纯数据参数不受影响。
+        // M11-6:同步保持 —— 跨 worker fn 回调的调用方可能是同步方法(registerProvider 的
+        // create)或 await 的 async 方法(agents.create 的 setup)。同步泵不占**属主 worker**
+        // 的事件循环(回调在属主 worker 执行,其 macrotask 由属主的事件循环跑)——只要发起
+        // 方 worker(如 web 调 agents.create)已异步化、其事件循环自由,回调内部 fs.stat 等
+        // macrotask 就能跑,互等解除。故此处保持同步,兼容同步回调调用方。
         return syncBridgeCall('invokeService', {
           handle: v.id, method: '$call',
           args: args.map(x => serializeValue(x, undefined, { liveHandles: true })),
@@ -446,7 +470,12 @@ function deserializeValue(v) {
   }
   if (v.$kind === 'ctx') {
     const c = ctxById.get(v.id)
-    if (c === undefined) throw new Error('unknown ctx handle ' + v.id)
+    if (c === undefined) {
+      // M11-6:外部 worker 的 ctx(本地无该 ctxId)→ 创建远程 ctx 代理(makeCtx 经桥路由回
+      // 属主 ctx,on/emit/get 与动态成员(agent 等)经 ctxCall 由 Java 核心路由到属主)。
+      // ctxId 用每 worker 独立区间(DSH_HANDLE_BASE),跨 worker 不冲突,不会误命中本地 ctx。
+      return makeCtx(v.id)
+    }
     return c
   }
   if (v.$kind === 'svc') return makeServiceProxy(v.id)
@@ -475,8 +504,20 @@ function deserializeValue(v) {
 function makeServiceProxy(handle) {
   // M7-8:参数带 liveHandles 序列化 —— 方法参数里的 live 对象(如 llm.registerAdapter 的
   // adapter 类实例)以句柄跨桥,读方可路由回属主调用其方法;纯数据参数不受影响(不强转)。
-  const invoke = (method, args) =>
+  // M11-6:同步/异步分流 —— proxy 元操作($members/$get/iterator)必须同步(JS proxy trap
+  // 与 for...of 要求同步返回);普通服务方法**异步**(asyncBridgeCall):真实 dsh 服务方法
+  // 都是 async(Promise),插件总是 await,异步不阻塞事件循环 → 解除跨 worker 回调链死锁。
+  const invokeSync = (method, args) =>
     syncBridgeCall('invokeService', { handle, method, args: args.map(x => serializeValue(x, undefined, { liveHandles: true })) })
+  // M11-6:参数带 async fn 回调(如 agents.create 的 setup)→ 异步(防跨 worker 同步回调链
+  // 死锁);同步 fn/纯数据 → 同步(既有语义)。
+  const invoke = (method, args) => {
+    const serialized = args.map(x => serializeValue(x, undefined, { liveHandles: true }))
+    if (hasAsyncFnHandle(serialized)) {
+      return asyncBridgeCall('invokeService', { handle, method, args: serialized })
+    }
+    return syncBridgeCall('invokeService', { handle, method, args: serialized })
+  }
   const callable = (...args) => invoke('$call', args)
   // 成员描述符缓存:name → 'function' | 'value'(getter/数据字段)。$members 失败(旧宿主 /
   // 不支持)时退化为"全部可调用",保持 M7-7 行为。
@@ -485,7 +526,7 @@ function makeServiceProxy(handle) {
     if (memberKinds === null) {
       memberKinds = new Map()
       try {
-        const list = invoke('$members', [])
+        const list = invokeSync('$members', [])
         if (Array.isArray(list)) {
           for (const it of list) {
             if (it && typeof it === 'object' && typeof it.name === 'string') {
@@ -509,7 +550,7 @@ function makeServiceProxy(handle) {
         return function () {
           let itProxy
           try {
-            itProxy = invoke('iterator', [])   // 返回 svc 句柄代理(deserializeValue)
+            itProxy = invokeSync('iterator', [])   // 返回 svc 句柄代理(deserializeValue)
           } catch (e) {
             itProxy = callable                  // 非 Iterable:视原句柄为迭代器
           }
@@ -528,7 +569,7 @@ function makeServiceProxy(handle) {
       if (typeof prop === 'symbol') return undefined
       const name = String(prop)
       // getter/数据字段成员 → 直接读值(invokeService '$get' → invokeGet 触发 getter)。
-      if (kinds().get(name) === 'value') return invoke('$get', [name])
+      if (kinds().get(name) === 'value') return invokeSync('$get', [name])
       return (...args) => invoke(name, args)
     },
   })
@@ -537,6 +578,21 @@ function makeServiceProxy(handle) {
 /** M7-8:消息携带的 fn 句柄是否为跨 worker 全局句柄(id ≥ GLOBAL_FN_ID_BASE)。 */
 function isGlobalFnHandle(h) {
   return !!h && typeof h === 'object' && h.$kind === 'fn' && typeof h.id === 'number' && h.id >= GLOBAL_FN_ID_BASE
+}
+
+/**
+ * 序列化参数里是否含 **async** fn 句柄(递归)。M11-6:方法参数带 async fn 回调(如
+ * agents.create 的 setup)意味着该方法执行期间会**回调回来**,且回调内部需要 macrotask
+ * (fs.stat/动态 import)→ 调用方若同步泵等待,会饿死回调所在 worker 的事件循环 → 互等
+ * 死锁。此类调用必须异步(await 挂起不阻塞事件循环);同步 fn(registerProvider 的 create)
+ * 或纯数据参数的方法保持同步(既有语义)。
+ */
+function hasAsyncFnHandle(v) {
+  if (v === null || typeof v !== 'object') return false
+  if (v.$kind === 'fn') return v.async === true
+  if (Array.isArray(v)) return v.some(hasAsyncFnHandle)
+  for (const k of Object.keys(v)) if (hasAsyncFnHandle(v[k])) return true
+  return false
 }
 
 /** 泵动 microtask 链(限次):让 dispatchRequest 的 .then(发送回复)在同步泵内真正发出。
@@ -554,6 +610,35 @@ function pumpMicrotasks() {
 const deferred = []   // 泵期间入队的已解析消息对象(事件循环按序处理)
 let bridgeSeq = 0
 
+// ---- 异步桥调用(service 方法 / 跨 worker fn 回调):不阻塞事件循环 ----
+// 死锁根因修复:同步泵(syncBridgeCall)等待跨 worker 回复时**占住主事件循环**,饿死
+// 同 worker 内的 macrotask(动态 import / setTimeout / ESM TLA)→ setup 回调链
+// (presets.mount 的 import)永不 settle → web↔core 互等死锁。异步桥让方法调用返回
+// Promise:await 挂起但事件循环自由,macrotask 照常跑,回复到达经主循环 resolve。
+// 同步语义保留给 ctx 方法(ctx.get 等)与 proxy 元操作($members/$get/iterator ——
+// JS proxy trap 必须同步返回)。asyncWaiters 的回复由 routeMessage(主循环)或同步泵
+// (泵内顺带)resolve,两者都查同一张表。
+const asyncWaiters = new Map()
+function asyncBridgeCall(type, payload) {
+  const id = ++bridgeSeq
+  return new Promise((resolve, reject) => {
+    try {
+      send(Object.assign({ type, id }, payload))
+      asyncWaiters.set(id, { resolve, reject })
+    } catch (e) {
+      reject(e)
+    }
+  })
+}
+function resolveAsyncWaiter(msg) {
+  const w = asyncWaiters.get(msg.id)
+  if (!w) return false
+  asyncWaiters.delete(msg.id)
+  if (msg.error) w.reject(new Error('java bridge error: ' + msg.error))
+  else w.resolve(deserializeValue(msg.result))
+  return true
+}
+
 function syncBridgeCall(type, payload) {
   const id = ++bridgeSeq
   send(Object.assign({ type, id }, payload))
@@ -570,6 +655,10 @@ function syncBridgeCall(type, payload) {
     if (msg.type === 'ctxResult' && msg.id === id) {
       if (msg.error) throw new Error('java bridge error: ' + msg.error)
       return deserializeValue(msg.result)
+    }
+    if (msg.type === 'ctxResult' && resolveAsyncWaiter(msg)) {
+      // M11-6:泵内顺带消费异步桥调用的回复(主循环被泵占住时异步回复也必须及时 resolve)。
+      continue
     }
     // M7-8:rehandleObj 是纯注册表操作(把 objById 条目迁到全局 id),**泵内同步处理** ——
     // 提供方 worker 在 provide 后紧接着自读自己的服务(ctx.get → {$kind:'obj', id:全局id})
@@ -894,6 +983,7 @@ function makeCtx(ctxId) {
   }
   const proxy = new Proxy(ctx, {
     get(target, prop, receiver) {
+      if (prop === CTX_MARK) return ctxId
       if (prop in target) return Reflect.get(target, prop, receiver)
       if (typeof prop === 'symbol') return undefined
       return ctx.get(String(prop))
@@ -1269,7 +1359,9 @@ async function handleRequest(msg) {
 function routeMessage(msg) {
   if (msg.type === 'ctxResult') {
     // Java 对某次桥调用的回复。同步泵(syncBridgeCall)在泵内按 id 直接消费当前请求的回复;
-    // 泵外到达的 ctxResult 只可能是迟到/多余的回复(当前没有异步桥调用在等它)→ 忽略。
+    // 主循环到达的 ctxResult 是**异步桥调用(asyncBridgeCall)**的回复 → resolve 对应 waiter;
+    // 无 waiter(迟到/多余)忽略。
+    resolveAsyncWaiter(msg)
     return
   }
   if (msg.type === 'result' || msg.type === 'error') {

@@ -83,6 +83,10 @@ public final class NodeWorkerJsHost implements JsHost {
     // worker。宿主关闭 / 句柄释放时清理条目。
     private static final long GLOBAL_OBJ_ID_BASE = 100_000_000L;
     private static final Map<Long, NodeWorkerJsHost> REMOTE_OBJ_OWNERS = new ConcurrentHashMap<>();
+    /** M11-6:ctx 句柄 → 属主宿主(跨 worker ctxCall 路由)。worker 本地 ctxId 用 DSH_HANDLE_BASE
+     *  独立区间(1M 起每 worker 1M),跨 worker 不冲突;createCtx 时注册本宿主。读方 worker
+     *  收到 {$kind:'ctx', id} 创建远程 makeCtx,其 ctxCall 经此路由回属主执行。 */
+    private static final Map<Long, NodeWorkerJsHost> CTX_OWNERS = new ConcurrentHashMap<>();
     private static final AtomicLong GLOBAL_OBJ_ID = new AtomicLong(GLOBAL_OBJ_ID_BASE);
     // M7-8:跨 worker 回调 —— 服务方法参数里的 fn 句柄导出为全局 id(≥ GLOBAL_FN_ID_BASE,
     // 与 obj 空间错开),全局 fn id → 属主宿主 映射,使属主 worker 之外的 worker 能经 Java
@@ -98,6 +102,10 @@ public final class NodeWorkerJsHost implements JsHost {
      *  worker 单线程的 apply 互等死锁 → node worker is not alive)。必须 < 2^53(JS Number
      *  精确整数上限),否则经 JSON 传给 worker 的 ctxId 精度丢失 → makeCtx 路由错 bridge。 */
     private final AtomicLong childCtxSeq = new AtomicLong(100_000_000L);
+    /** 每 worker 本地句柄 id 独立区间基址(1M 起,每 worker 1M):避免跨 worker 本地 id
+     *  (nextHandle: fn/obj/ctx)冲突 → 读方 worker 的 objById/ctxById 误命中本地对象
+     *  (实测 agentCtx 跨 worker 时 web 拿到本地 makeCtx,setup 读 .agent 得 undefined)。 */
+    private static final AtomicLong WORKER_HANDLE_BASE = new AtomicLong(1_000_000L);
     /** M8 low ②:跨 worker 句柄转发专用固定大小 daemon 线程池 —— 复用线程、限制并发(原虚拟
      *  线程每任务一线程,并发无界)。reader 线程只入队不阻塞;池线程阻塞等属主 worker 回复
      *  (reader 线程继续泵消息,防互等死锁)。宿主 close() 时 shutdownNow 回收。 */
@@ -175,6 +183,8 @@ public final class NodeWorkerJsHost implements JsHost {
                 pb.environment().put("NODE_PATH", joined);
                 pb.environment().put("DSH_MODULE_BASES", joined);
             }
+        // M11-6:每 worker 独立本地句柄 id 区间(防跨 worker id 冲突)。基址经 env 传给 worker。
+        pb.environment().put("DSH_HANDLE_BASE", String.valueOf(WORKER_HANDLE_BASE.getAndAdd(1_000_000L)));
         }
         // M7-5:额外环境变量(测试注入 DSH_HOME 等,验证 worker 侧 !!js 的 process.env 求值)
         if (extraEnv != null) {
@@ -260,6 +270,7 @@ public final class NodeWorkerJsHost implements JsHost {
         long id = resp.path("id").asLong(-1);
         NodeRef ctxRef = new NodeRef(id, "ctx");
         bridges.put(id, bridge);
+        CTX_OWNERS.put(id, this);
         bridge.ctxId(id);
         return ctxRef;
     }
@@ -268,6 +279,7 @@ public final class NodeWorkerJsHost implements JsHost {
     long registerChildCtx(NodeWorkerBridge bridge) {
         long id = childCtxSeq.getAndIncrement();
         bridges.put(id, bridge);
+        CTX_OWNERS.put(id, this);
         bridge.ctxId(id);
         return id;
     }
@@ -691,7 +703,17 @@ public final class NodeWorkerJsHost implements JsHost {
             if ("ctxCall".equals(msg.path("type").asText())) {
                 long ctxId = msg.path("ctx").asLong(-1);
                 NodeWorkerBridge bridge = bridges.get(ctxId);
-                if (bridge == null) throw new NodeBridgeError("unknown ctx handle " + ctxId);
+                if (bridge == null) {
+                    // M11-6:跨 worker ctxCall —— 本 host 无该 ctx(属主是另一 worker 的桥
+                    // ctx)→ 转发到属主 host 执行(helper 池,防 reader 线程死锁)。远程
+                    // makeCtx(读方 worker)的 on/emit/get/动态成员(agent 等)经此路由回属主。
+                    NodeWorkerJsHost owner = CTX_OWNERS.get(ctxId);
+                    if (owner != null && owner != this) {
+                        forwardCtxAsync(msg, id, owner);
+                        return;
+                    }
+                    throw new NodeBridgeError("unknown ctx handle " + ctxId);
+                }
                 result = bridge.handleCtxCall(msg);
             } else {
                 long handle = msg.path("handle").asLong(-1);
@@ -758,6 +780,37 @@ public final class NodeWorkerJsHost implements JsHost {
                 }
             }
         });
+    }
+
+    /** M11-6:跨 worker ctxCall 转发 —— 在 helper 池线程执行属主 host 的 ctxCall(防 reader
+     *  线程互等死锁),结果回写给发起的 worker。 */
+    private void forwardCtxAsync(JsonNode msg, long id, NodeWorkerJsHost owner) {
+        remoteForwardExecutor.execute(() -> {
+            try {
+                Object result = owner.executeCtxCall(msg);
+                ObjectNode resp = mapper.createObjectNode();
+                resp.put("type", "ctxResult");
+                resp.put("id", id);
+                resp.set("result", result == null ? NullNode.instance : toJsonNode(result));
+                write(resp.toString());
+            } catch (Throwable t2) {
+                ObjectNode resp = mapper.createObjectNode();
+                resp.put("type", "ctxResult");
+                resp.put("id", id);
+                resp.put("error", String.valueOf(t2.getMessage()));
+                try { write(resp.toString()); } catch (RuntimeException ignored) {
+                    // worker 已关闭:放弃
+                }
+            }
+        });
+    }
+
+    /** M11-6:在属主 host 上执行一次 ctxCall(本 host 的 ctx bridge 处理)。 */
+    private Object executeCtxCall(JsonNode msg) {
+        long ctxId = msg.path("ctx").asLong(-1);
+        NodeWorkerBridge bridge = bridges.get(ctxId);
+        if (bridge == null) throw new NodeBridgeError("unknown ctx handle " + ctxId);
+        return bridge.handleCtxCall(msg);
     }
 
     private void failAllPending(String reason) {
