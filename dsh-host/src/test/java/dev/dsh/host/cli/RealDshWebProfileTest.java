@@ -53,10 +53,14 @@ class RealDshWebProfileTest {
         ProfileBoot boot = new ProfileBoot(repo.resolve("profiles"), repo);
         try (ProfileBoot.Handle handle = boot.bootOnce("web",
                 new PrintStream(System.out, true, StandardCharsets.UTF_8))) {
+            // M10-3 懒加载:priority(web 运行时)同步 apply 后返回,核心服务后台 settle——
+            // 断言前等后台完成,否则 system-prompt 等服务尚未注册。
+            handle.loader().settle();
 
             // M8:真实 dsh web 后端全树宿主 —— webserver / api-gateway / client 模块系统 /
             // 前端静态 serve 插件都真实加载(逐插件 NODE worker,经桥注册进 Java 核心)
-            List<LoadedPlugin> loaded = handle.loaded();
+            // M10-3 懒加载:bootOnce 快照仅 priority;settle 后用 loader().loaded()(含后台 deferred)。
+            List<LoadedPlugin> loaded = handle.loader().loaded();
             assertThat(loaded).anySatisfy(lp ->
                     assertThat(lp.entry().name()).isEqualTo("webserver"));
             assertThat(loaded).anySatisfy(lp ->

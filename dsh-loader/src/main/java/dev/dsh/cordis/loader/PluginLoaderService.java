@@ -67,6 +67,7 @@ public final class PluginLoaderService implements AutoCloseable {
     private final List<LoadedPlugin> loaded = new ArrayList<>();
     private final Map<Path, FileWatcher> configWatchers = new HashMap<>();
     private final Map<String, JsHost> groupHosts = new java.util.concurrent.ConcurrentHashMap<>();  // M9-1:进程组 → 共享 Node worker(并行加载需并发安全)
+    private volatile Thread settlingThread;   // M10-3:懒加载后台 apply 线程(热重载前 settle 等待)
     private Thread watcherThread;
     private volatile Throwable lastError;         // 最近一次后台热更新失败(无失败为 null)
     private volatile Consumer<Throwable> onReloadError;
@@ -119,14 +120,39 @@ public final class PluginLoaderService implements AutoCloseable {
     private List<LoadedPlugin> loadAndRegister(List<Entry> entries) throws Exception {
         // M9-1:全量重载 → 关闭所有进程组宿主(全新 worker;避免 Node 模块缓存返回旧模块)。
         closeAllGroupHosts();
-        List<LoadedPlugin> next = loadAll(entries);     // 先全部加载(失败 → 释放已建宿主)
+        // M10-3 真懒加载:priority 插件(web 运行时)先加载+apply(端口早绑),非 priority 后台
+        // 加载+apply。无 priority → 保持同步语义(全部加载+apply 后再返回,向后兼容)。
+        List<Entry> priorityEntries = new ArrayList<>();
+        List<Entry> deferredEntries = new ArrayList<>();
+        for (Entry e : entries) {
+            (e.priority() ? priorityEntries : deferredEntries).add(e);
+        }
+        List<LoadedPlugin> next = new ArrayList<>();
         try {
-            for (LoadedPlugin lp : next) {
-                lp.register(ctx);
-                verifyFiber(lp, ctx);   // 初始加载同样校验 apply 实际生效(apply 抛错被 Fiber.reload 吞掉 → 状态 FAILED)
+            if (priorityEntries.isEmpty()) {
+                next = loadAll(entries);
+                registerAll(next);
+            } else {
+                next = loadAll(priorityEntries);
+                registerAll(next);
+                if (!deferredEntries.isEmpty()) {
+                    Thread bg = Thread.ofVirtual().start(() -> {
+                        try {
+                            List<LoadedPlugin> def = loadAll(deferredEntries);
+                            registerAll(def);
+                            synchronized (loaded) {
+                                loaded.addAll(def);
+                            }
+                        } catch (Exception e) {
+                            ctx.logger().error("background lazy load/apply failed", e);
+                        }
+                    });
+                    settlingThread = bg;
+                }
             }
         } catch (Exception e) {
-            for (LoadedPlugin lp : next) quietlyUnregister(lp, ctx);   // 注册期失败 → 卸载已注册的(close 抛错不掩盖根因)
+            settle();
+            for (LoadedPlugin lp : next) quietlyUnregister(lp, ctx);
             throw e;
         }
         loaded.clear();
@@ -135,10 +161,32 @@ public final class PluginLoaderService implements AutoCloseable {
         return List.copyOf(loaded);
     }
 
+    /** 顺序注册并校验(apply);失败抛错由调用方回滚。 */
+    private void registerAll(List<LoadedPlugin> plugins) throws Exception {
+        for (LoadedPlugin lp : plugins) {
+            lp.register(ctx);
+            verifyFiber(lp, ctx);
+        }
+    }
+
+    /** 等后台懒加载 apply 全部完成(热重载前必须 settle,否则 diff 到半注册状态)。 */
+    public synchronized void settle() {
+        Thread t = settlingThread;
+        if (t != null) {
+            settlingThread = null;
+            try {
+                t.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
     // ---- 替换/组合(重载) ----
 
     /** 重读配置 → 与已加载 diff → 新增注册 / 变更替换 / 移除 dispose;失败回滚旧态。 */
     public synchronized void reload(Path yml) throws Exception {
+        settle();
         setConfig(yml);
         applyDiff(EntryTree.parse(configFile).flatten());
         refreshConfigWatchers();
@@ -146,6 +194,7 @@ public final class PluginLoaderService implements AutoCloseable {
 
     /** 重载当前配置(不换文件)。 */
     public synchronized void reload() throws Exception {
+        settle();
         if (configFile == null) throw new IllegalStateException("no config loaded yet");
         applyDiff(EntryTree.parse(configFile).flatten());
         refreshConfigWatchers();
@@ -170,6 +219,7 @@ public final class PluginLoaderService implements AutoCloseable {
      * 配置变更 → 全量 diff 重载;插件源变更 → 仅重载该插件(失败回滚旧实现)。
      */
     public synchronized boolean updateIfChanged() throws Exception {
+        settle();
         boolean configChanged = false;
         for (FileWatcher w : configWatchers.values()) {
             if (w.changed()) configChanged = true;
@@ -249,6 +299,7 @@ public final class PluginLoaderService implements AutoCloseable {
 
     /** 卸载全部已注册插件(dispose fiber + 关闭 JS 宿主)并停止监听。 */
     public synchronized void dispose() {
+        settle();
         stopWatch();
         List<LoadedPlugin> old = new ArrayList<>(loaded);
         loaded.clear();
@@ -278,23 +329,20 @@ public final class PluginLoaderService implements AutoCloseable {
         // M10-3:并行化加载 —— 按"独立 worker"分区(每个进程组 = 1 个并行单元,非组 node 插件
         // 各 1 个),各分区在虚拟线程并发加载(每分区自己的 worker 独立);结果按原条目序收集。
         // 这省掉 99 插件顺序 require 的大部分;register/apply 仍顺序(共享 ctx 非线程安全)。
-        Map<String, List<Entry>> byUnit = new LinkedHashMap<>();
-        for (Entry e : entries) byUnit.computeIfAbsent(loadUnitKey(e), k -> new ArrayList<>()).add(e);
         java.util.concurrent.CopyOnWriteArrayList<LoadedPlugin> staged = new java.util.concurrent.CopyOnWriteArrayList<>();
         java.util.concurrent.ConcurrentLinkedQueue<Throwable> firstError = new java.util.concurrent.ConcurrentLinkedQueue<>();
         try {
-            // 每单元一个虚拟线程并发加载;顺序路径(单单元)同一线程直接加载。
+            // M10-3:每插件一个虚拟线程并发加载(组内也并行——worker 事件循环处理多请求;
+            // 非组插件并发 spawn 各自 worker)。结果按原条目序收集。
             List<Thread> threads = new java.util.ArrayList<>();
-            for (List<Entry> unit : byUnit.values()) {
+            for (Entry e : entries) {
                 Thread t = Thread.ofVirtual().start(() -> {
                     try {
-                        for (Entry e : unit) {
-                            LoadedPlugin lp = loadPlugin(e);
-                            if (disabledByJsEval(e, lp)) {
-                                closeQuietly(lp);          // disabled !!js 为真 → 不加载
-                            } else {
-                                staged.add(lp);
-                            }
+                        LoadedPlugin lp = loadPlugin(e);
+                        if (disabledByJsEval(e, lp)) {
+                            closeQuietly(lp);          // disabled !!js 为真 → 不加载
+                        } else {
+                            staged.add(lp);
                         }
                     } catch (Throwable ex) {
                         firstError.offer(ex);
@@ -325,11 +373,6 @@ public final class PluginLoaderService implements AutoCloseable {
         }
     }
 
-    /** 并行加载单元键:进程组名(node 组共享一个 worker)或"unique-<name>"(非组独立 worker)。 */
-    private String loadUnitKey(Entry e) {
-        String group = e.group();
-        return group != null ? "group:" + group : "unique:" + e.name();
-    }
 
     /**
      * 求值条目的 disabled 标记({@code {$dshJs: expr}},M7-6):表达式在宿主(worker)侧求值,

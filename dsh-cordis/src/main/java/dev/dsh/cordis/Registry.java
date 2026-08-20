@@ -7,7 +7,7 @@ import java.util.*;
 /** Plugin registry installed as ctx.registry (registry.ts:195-337). */
 public final class Registry {
     private int _counter = 0;
-    private final Map<Plugin<?>, Plugin.Runtime> _internal = new IdentityHashMap<>();
+    private final Map<Plugin<?>, Plugin.Runtime> _internal = java.util.Collections.synchronizedMap(new IdentityHashMap<>());
 
     public final Context ctx;
 

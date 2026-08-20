@@ -348,7 +348,9 @@ public final class DshProfileReader {
             // 透传;布尔 `group: true` 是 dsh group 容器行(上面已跳过),不冲突。
             String group = row.path("group").isTextual() ? row.path("group").asText().trim() : null;
             if (group != null && group.isBlank()) group = null;
-            out.add(new Entry(id.trim(), module.trim(), null, null, null, config, disabledMarker, group));
+            // M10-3:priority —— 懒加载:先同步 apply 的 UI 关键插件,其余后台顺序 apply。
+            boolean priority = row.path("priority").asBoolean(false);
+            out.add(new Entry(id.trim(), module.trim(), null, null, null, config, disabledMarker, group, priority));
         }
         return out;
     }

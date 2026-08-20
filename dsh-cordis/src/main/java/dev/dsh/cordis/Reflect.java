@@ -39,9 +39,9 @@ public final class Reflect {
     public final Context ctx;
 
     /** Service impls keyed by isolation label. */
-    public final Map<String, Impl> store = new HashMap<>();
+    public final Map<String, Impl> store = new java.util.concurrent.ConcurrentHashMap<>();
     /** Declared context properties by name. */
-    public final Map<String, Property> props = new HashMap<>();
+    public final Map<String, Property> props = new java.util.concurrent.ConcurrentHashMap<>();
 
     public Reflect(Context ctx) { this.ctx = ctx; }
 

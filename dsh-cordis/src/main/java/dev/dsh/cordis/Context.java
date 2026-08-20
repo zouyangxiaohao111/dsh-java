@@ -17,9 +17,9 @@ public final class Context {
     public String baseUrl;
 
     /** Isolation map: name → scope label. */
-    public final Map<String, String> isolate = new HashMap<>();
+    public final Map<String, String> isolate = new java.util.concurrent.ConcurrentHashMap<>();
     /** Intercept map: name → config merged into that service's per-plugin config. */
-    public final Map<String, Object> intercept = new HashMap<>();
+    public final Map<String, Object> intercept = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Listener filter consulted on event dispatch (reflect.ts proxy filter). */
     public Predicate<Context> filter;
@@ -80,14 +80,14 @@ public final class Context {
      *  `label`; passing the same label to two isolates joins their scopes (context.ts:121-125). */
     public Context isolate(String name, String label) {
         if (label == null) label = name + "@" + System.identityHashCode(new Object());
-        Map<String, String> iso = new HashMap<>();
+        Map<String, String> iso = new java.util.concurrent.ConcurrentHashMap<>();
         iso.put(name, label);
         return extend(Map.of(Symbols.ISOLATE, iso));
     }
 
     /** Add service-specific intercept config for plugins below (context.ts:139-145). */
     public Context intercept(String name, Object config) {
-        Map<String, Object> ic = new HashMap<>();
+        Map<String, Object> ic = new java.util.concurrent.ConcurrentHashMap<>();
         ic.put(name, config);
         return extend(Map.of(Symbols.INTERCEPT, ic));
     }

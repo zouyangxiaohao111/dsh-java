@@ -29,7 +29,7 @@ import java.util.Locale;
  * </ul>
  */
 public record Entry(String name, String source, String path, HostKind host, String mainClass, JsonNode config,
-                    JsonNode disabled, String group) {
+                    JsonNode disabled, String group, boolean priority) {
 
     /** 4 参便捷构造(无 {@code mainClass}/{@code config})——保持旧调用方兼容。 */
     public Entry(String name, String source, String path, HostKind host) {
@@ -49,7 +49,13 @@ public record Entry(String name, String source, String path, HostKind host, Stri
     /** 7 参便捷构造(无 {@code group})——保持旧调用方兼容。 */
     public Entry(String name, String source, String path, HostKind host, String mainClass, JsonNode config,
                  JsonNode disabled) {
-        this(name, source, path, host, mainClass, config, disabled, null);
+        this(name, source, path, host, mainClass, config, disabled, null, false);
+    }
+
+    /** 8 参便捷构造(带 group,无 priority)——保持旧调用方兼容。 */
+    public Entry(String name, String source, String path, HostKind host, String mainClass, JsonNode config,
+                 JsonNode disabled, String group) {
+        this(name, source, path, host, mainClass, config, disabled, group, false);
     }
 
     /** 从 yml 节点解析;{@code name} 缺省回退到 dsh 写法的 {@code id}。 */
@@ -74,7 +80,8 @@ public record Entry(String name, String source, String path, HostKind host, Stri
         if (mainClass != null && mainClass.isBlank()) mainClass = null;
         String group = node.path("group").isTextual() ? node.path("group").asText().trim() : null;
         if (group != null && group.isBlank()) group = null;
-        return new Entry(name.trim(), source, path, host, mainClass, config, null, group);
+        boolean priority = node.path("priority").asBoolean(false);
+        return new Entry(name.trim(), source, path, host, mainClass, config, null, group, priority);
     }
 
     /** 原始引用(source / path 之一;前缀剥离属 HostSelector 的职责)。 */

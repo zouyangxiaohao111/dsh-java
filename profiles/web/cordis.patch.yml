@@ -298,3 +298,29 @@
   group: web
 - id: plugin-inventory
   group: web
+
+
+
+# ── M10-3:懒加载 priority(web 运行时先 apply → 端口早绑,核心服务后台 settle)────
+- id: web-startup
+  priority: true
+- id: webserver
+  priority: true
+- id: web-runtime
+  priority: true
+- id: modules
+  priority: true
+- id: connection
+  priority: true
+- id: api-gateway
+  priority: true
+- id: api-remotes
+  priority: true
+- id: client-runtime
+  priority: true
+- id: cordis-client-runner
+  priority: true
+- id: agent-presets
+  priority: true
+- id: locale
+  priority: true
