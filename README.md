@@ -216,3 +216,17 @@ Java 核心(dev.dsh.cordis)      ← 唯一不可替换
 ## License
 
 [MIT](LICENSE)
+
+## IDEA 一键启动(M10-2)
+
+**Main class**: `dev.dsh.host.DshjLauncher`(自动定位仓库根,无需配工作目录)
+
+Run Configuration:
+| 项 | 值 |
+|---|---|
+| Main class | `dev.dsh.host.DshjLauncher` |
+| Program arguments | 空 = `web`;可写 `headless` / `--profile x` / `web --dev` |
+| VM options | `-Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8` |
+| Working directory | 任意(启动器自动切到仓库根) |
+
+启动后浏览器打开 `http://127.0.0.1:3080/` 即真实 dsh web UI。或命令行 `./dshj web`(installDist 秒起)。
