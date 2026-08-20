@@ -978,6 +978,7 @@ public final class NodeWorkerJsHost implements JsHost {
                 if ("remove".equals(method)) { it.remove(); return null; }
             }
             if ("$call".equals(method)) {
+                if (svc instanceof dev.dsh.cordis.util.Disposable d) { d.dispose(); return null; }
                 if (svc instanceof java.util.function.Function && !args.isEmpty()) {
                     return ((java.util.function.Function<Object, Object>) svc).apply(args.get(0));
                 }

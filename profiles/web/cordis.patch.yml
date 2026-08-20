@@ -65,9 +65,22 @@
 - id: cordis-client-runner
   group: web
 - id: agent-presets
-  group: web
+  group: core
+  config:
+    default: standard
+    roots:
+      - path: !!js "(process.env.DSH_MODULE_BASES || '').split(';')[0] + '/../apps/cli/config/agent-presets'"
+        trust: system
+  # M11-5:agent 预设注册(会话创建必需 —— preset "standard" 找不到 → 工作区后无法会话,
+  # UI 退回选择工作区)。① server 半移 core 组(依赖 settings + dsh-scope/dsh-home-paths
+  # 库,module 解析不受组影响)→ settings 本地注册。② bundle 只配 default: standard,预设
+  # roster 目录(apps/cli/config/agent-presets)由 apps/cli 的 composeProfile patch 进 ——
+  # 我们不走 cli,故用户层补 roots 指向该目录(经 DSH_MODULE_BASES env 定位 vendor/dsh,
+  # 通用;resolve 规范化相对/混合路径)。client 半仍进 manifest。
 - id: locale
-  group: web
+  group: core
+  # M11-5:语言设置持久化 —— server 半只依赖 settings(register locale namespace);
+  # 移 core 组本地注册,跨 worker schema 限制绕过。client 半仍进 manifest。
 # ui-* 客户端模块行:modules 扫描它们进 __DSH_BOOT__ 并按 /plugins/<id>/client.js 服务;
 # 同 worker 保证客户端模块本地可服务(不走跨 worker req/res)。
 - id: ui-theme
