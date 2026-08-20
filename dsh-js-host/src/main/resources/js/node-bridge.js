@@ -86,11 +86,12 @@ const OVERSIZE = 3
 //   control[1] = 当前行的字节长度
 //   data[0..]  = 当前行的字节
 function makeSlot() {
-  const sab = new SharedArrayBuffer(2 * 4 + SLOT_SIZE)
+  const sab = new SharedArrayBuffer(3 * 4 + SLOT_SIZE)
   return {
     state: new Int32Array(sab, 0, 1),
     len: new Int32Array(sab, 4, 1),
-    data: new Uint8Array(sab, 8),
+    lock: new Int32Array(sab, 8, 1),   // 0=空闲 1=消费者/reader 占用(读-改-写互斥)
+    data: new Uint8Array(sab, 12),
   }
 }
 
@@ -121,13 +122,23 @@ function readerMain(slot) {
         }
         buf = Buffer.concat([buf, chunk.subarray(0, n)])
       }
-      const line = buf.subarray(0, idx)
-      buf = buf.subarray(idx + 1)
-      const n = Math.min(line.length, SLOT_SIZE)
-      slot.data.set(line.subarray(0, n))
-      Atomics.store(slot.len, 0, n)
-      Atomics.store(slot.state, 0, n < line.length ? OVERSIZE : READY)
-      Atomics.notify(slot.state, 0)
+      // 等消费者锁释放(上一行可能正被 takeSlotLine 拷贝),避免覆盖正在读取的数据。
+      for (;;) {
+        if (Atomics.compareExchange(slot.lock, 0, 0, 1) === 0) break
+        Atomics.wait(slot.lock, 0, 1, 2)
+      }
+      try {
+        const line = buf.subarray(0, idx)
+        buf = buf.subarray(idx + 1)
+        const n = Math.min(line.length, SLOT_SIZE)
+        slot.data.set(line.subarray(0, n))
+        Atomics.store(slot.len, 0, n)
+        Atomics.store(slot.state, 0, n < line.length ? OVERSIZE : READY)
+        Atomics.notify(slot.state, 0)
+      } finally {
+        Atomics.store(slot.lock, 0, 0)
+        Atomics.notify(slot.lock, 0)
+      }
     }
   } catch (e) {
     // reader 异常(stdin 读失败等):视为 EOF,主线程统一收尾
@@ -178,12 +189,26 @@ async function takeLineAsync() {
 
 /** 从槽拷贝一行(必须 state != EMPTY/EOF 时调用),复位槽并唤醒 reader。 */
 function takeSlotLine() {
-  const s = Atomics.load(slot.state, 0)
-  const n = Atomics.load(slot.len, 0)
-  const line = Buffer.from(slot.data.subarray(0, n)).toString('utf8')
-  Atomics.store(slot.state, 0, EMPTY)
-  Atomics.notify(slot.state, 0)
-  return s === OVERSIZE ? null : line
+  // CAS 抢锁:事件循环的 takeLineAsync 与同步泵的 takeLineSync 并发消费同一槽 ——
+  // 无锁时两者可同时读到同一行(takeSlotLine 读-改-写非原子)并各自处理 → 同一行被
+  // 双处理;更糟的是泵内嵌套分发把同一行重新入队 → 无限重复处理同一 id(实测
+  // invokeFn/rehandleFn 死循环)。锁保证一行只被一个消费者读走。
+  for (;;) {
+    if (Atomics.compareExchange(slot.lock, 0, 0, 1) === 0) break
+    Atomics.wait(slot.lock, 0, 1, 2)
+  }
+  try {
+    const s = Atomics.load(slot.state, 0)
+    if (s === EMPTY || s === EOF) return null   // 另一消费者已取走/EOF:调用方继续轮询
+    const n = Atomics.load(slot.len, 0)
+    const line = Buffer.from(slot.data.subarray(0, n)).toString('utf8')
+    Atomics.store(slot.state, 0, EMPTY)
+    Atomics.notify(slot.state, 0)
+    return s === OVERSIZE ? null : line
+  } finally {
+    Atomics.store(slot.lock, 0, 0)
+    Atomics.notify(slot.lock, 0)
+  }
 }
 
 // ---- 同步行读取:worker 主循环与嵌套同步桥调用(syncBridgeCall)共用同一把 stdin 读锁 ----
@@ -701,6 +726,7 @@ function makeCtx(ctxId) {
       const wrapped = (subCtxId) => cb(subCtxId === undefined ? undefined : makeCtx(subCtxId))
       return syncBridgeCall('ctxCall', { ctx: ctxId, method: 'inject', args: [deps.map(x => serializeValue(x)), serializeValue(wrapped)] })
     },
+    extend: (meta) => makeCtx(syncBridgeCall('ctxCall', { ctx: ctxId, method: 'extend', args: [serializeValue(meta)] })),
     accessor: (name, options) => syncBridgeCall('ctxCall', {
       ctx: ctxId, method: 'accessor',
       args: [name, options && typeof options.get === 'function' ? serializeValue(options.get) : null],
@@ -735,7 +761,16 @@ function makeCtx(ctxId) {
         throw new Error('ctx.plugin: unsupported plugin shape')
       }
       const result = apply(self, config)
-      return typeof result === 'function' ? result : undefined
+      // M11-6:ctx.plugin 必须返回 fiber(带 ctx + dispose)——createScope 用
+      // fiber.ctx.extend + quiesceFiber(fiber)。此前只返回 apply 结果(no-op 插件 →
+      // undefined)→ createScope 的 fiber.ctx.extend 崩溃(agent 创建失败 → 会话失败 →
+      // UI 退回选择工作区)。返回 fiber-like:ctx = self(可 extend),dispose = apply 结果
+      // 或 no-op。真实 fiber 的 full 语义(Java Registry.plugin)是后续改进。
+      return {
+        ctx: self,
+        dispose: typeof result === 'function' ? result : () => {},
+        inertia: undefined,
+      }
     },
     effect: (body, label) => {
       const stepped = body()

@@ -68,6 +68,8 @@ public final class NodeWorkerBridge {
                 return doMixin(args);
             case "inject":
                 return doInject(args);
+            case "extend":
+                return doExtend(args);
             case "effect":
                 return doEffect(args);
             case "accessor":
@@ -213,6 +215,22 @@ public final class NodeWorkerBridge {
             ctx.mixin(source, renamed);
         }
         return NullNode.instance;
+    }
+
+    /** M11-6:ctx.extend(meta) —— 返回子 ctx 的 ctxId(worker 侧 makeCtx(childId))。
+     *  与 doInject 同构(子 ctx 独立 bridge + Java 高位 ctxId 空间)。 */
+    private JsonNode doExtend(JsonNode args) {
+        java.util.Map<String, Object> meta = new java.util.LinkedHashMap<>();
+        if (args.size() > 0 && args.get(0) != null && args.get(0).isObject()) {
+            var it = args.get(0).fields();
+            while (it.hasNext()) {
+                var e = it.next();
+                meta.put(e.getKey(), host.fromJsonNode(e.getValue()));
+            }
+        }
+        dev.dsh.cordis.Context child = ctx.extend(meta);
+        long childId = host.registerChildCtx(new NodeWorkerBridge(host, child));
+        return host.toJsonNode(childId);
     }
 
     private JsonNode doInject(JsonNode args) {
