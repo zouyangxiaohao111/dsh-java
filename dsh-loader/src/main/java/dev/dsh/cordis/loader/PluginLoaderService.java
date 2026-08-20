@@ -66,7 +66,7 @@ public final class PluginLoaderService implements AutoCloseable {
     private Path baseDir;                        // 配置所在目录(相对引用基准)
     private final List<LoadedPlugin> loaded = new ArrayList<>();
     private final Map<Path, FileWatcher> configWatchers = new HashMap<>();
-    private final Map<String, JsHost> groupHosts = new HashMap<>();  // M9-1:进程组 → 共享 Node worker
+    private final Map<String, JsHost> groupHosts = new java.util.concurrent.ConcurrentHashMap<>();  // M9-1:进程组 → 共享 Node worker(并行加载需并发安全)
     private Thread watcherThread;
     private volatile Throwable lastError;         // 最近一次后台热更新失败(无失败为 null)
     private volatile Consumer<Throwable> onReloadError;
@@ -275,21 +275,60 @@ public final class PluginLoaderService implements AutoCloseable {
     /** 全量加载 entries(不注册):任一失败 → 释放已建宿主并抛出(旧态未动)。
      *  M7-6 disabled 通道:Entry 携带 {@code {$dshJs}} disabled 标记 → 加载后求值,为真则排除。 */
     private List<LoadedPlugin> loadAll(List<Entry> entries) throws Exception {
-        List<LoadedPlugin> staged = new ArrayList<>();
+        // M10-3:并行化加载 —— 按"独立 worker"分区(每个进程组 = 1 个并行单元,非组 node 插件
+        // 各 1 个),各分区在虚拟线程并发加载(每分区自己的 worker 独立);结果按原条目序收集。
+        // 这省掉 99 插件顺序 require 的大部分;register/apply 仍顺序(共享 ctx 非线程安全)。
+        Map<String, List<Entry>> byUnit = new LinkedHashMap<>();
+        for (Entry e : entries) byUnit.computeIfAbsent(loadUnitKey(e), k -> new ArrayList<>()).add(e);
+        java.util.concurrent.CopyOnWriteArrayList<LoadedPlugin> staged = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.concurrent.ConcurrentLinkedQueue<Throwable> firstError = new java.util.concurrent.ConcurrentLinkedQueue<>();
         try {
-            for (Entry e : entries) {
-                LoadedPlugin lp = loadPlugin(e);
-                if (disabledByJsEval(e, lp)) {      // disabled !!js 求值为真 → 插件不加载
-                    closeQuietly(lp);               // 关闭失败记日志,不得阻断整批加载
-                    continue;
-                }
-                staged.add(lp);
+            // 每单元一个虚拟线程并发加载;顺序路径(单单元)同一线程直接加载。
+            List<Thread> threads = new java.util.ArrayList<>();
+            for (List<Entry> unit : byUnit.values()) {
+                Thread t = Thread.ofVirtual().start(() -> {
+                    try {
+                        for (Entry e : unit) {
+                            LoadedPlugin lp = loadPlugin(e);
+                            if (disabledByJsEval(e, lp)) {
+                                closeQuietly(lp);          // disabled !!js 为真 → 不加载
+                            } else {
+                                staged.add(lp);
+                            }
+                        }
+                    } catch (Throwable ex) {
+                        firstError.offer(ex);
+                    }
+                });
+                threads.add(t);
             }
-            return staged;
+            for (Thread t : threads) t.join();
+            if (!firstError.isEmpty()) {
+                // 原样抛第一个失败(不包装,保持与顺序加载一致的错误语义/根因)。
+                Throwable err = firstError.peek();
+                if (err instanceof Exception e) throw e;
+                if (err instanceof Error e) throw e;
+                throw new Exception(err);
+            }
+            // 收集按原条目序(与顺序加载语义一致),保证 register 循环的依赖顺序。
+            Map<String, LoadedPlugin> byName = new HashMap<>();
+            for (LoadedPlugin lp : staged) byName.put(lp.entry().name(), lp);
+            List<LoadedPlugin> ordered = new ArrayList<>();
+            for (Entry e : entries) {
+                LoadedPlugin lp = byName.get(e.name());
+                if (lp != null) ordered.add(lp);
+            }
+            return ordered;
         } catch (Exception ex) {
             for (LoadedPlugin lp : staged) closeQuietly(lp);
             throw ex;
         }
+    }
+
+    /** 并行加载单元键:进程组名(node 组共享一个 worker)或"unique-<name>"(非组独立 worker)。 */
+    private String loadUnitKey(Entry e) {
+        String group = e.group();
+        return group != null ? "group:" + group : "unique:" + e.name();
     }
 
     /**
@@ -433,14 +472,21 @@ public final class PluginLoaderService implements AutoCloseable {
 
     // ---- M9-1:进程组共享宿主 ----
 
-    /** 取/建进程组共享的 Node worker(首个成员建,后续成员复用)。 */
+    /** 取/建进程组共享的 Node worker(首个成员建,后续成员复用);并发安全(M10-3 并行加载)。 */
     private JsHost sharedNodeHost(String group, Path requireCwd) throws IOException {
-        JsHost h = groupHosts.get(group);
-        if (h == null) {
-            h = hostFactory.create(HostKind.NODE, requireCwd);
-            groupHosts.put(group, h);
+        JsHost existing = groupHosts.get(group);
+        if (existing != null) return existing;
+        JsHost created = hostFactory.create(HostKind.NODE, requireCwd);
+        JsHost raced = groupHosts.putIfAbsent(group, created);
+        if (raced != null) {
+            try {
+                created.close();
+            } catch (Throwable t) {
+                ctx.logger().error(t);
+            }
+            return raced;
         }
-        return h;
+        return created;
     }
 
     /** 关闭并移除某进程组共享宿主(组变更 → 全新 worker,避免 Node 模块缓存返回旧模块)。 */
