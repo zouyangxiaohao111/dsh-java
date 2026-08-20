@@ -310,6 +310,14 @@
     - id: directory-picker-native
       name: '@deepseek-ai/dsh-host-directory-picker-native'
       group: web
+    - id: ui-directory-picker-browse
+      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+      group: web
+      # M11-2:directory flow 槽的 client 占用者 —— M11-1 禁用 auto 后它不再被 create 进
+      # loader,client 端无 "添加工作区" 入口 → 无工作区 + 无添加 → 工作区菜单空 → 点击无
+      # 反应(用户"选择工作区没法选")。作为 loader entry 启用,ClientModuleRegistry 扫进
+      # manifest,client 端激活注入 conversation.hero.workspace.directoryFlow slot → 菜单出现
+      # "添加工作区",用户可浏览目录创建首个工作区。
 - id: plugin-inventory
   group: web
 
