@@ -70,6 +70,13 @@ class RealDshWebProfileTest {
             assertThat(loaded).anySatisfy(lp ->
                     assertThat(lp.entry().name()).isEqualTo("web-runtime"));
 
+            // 防回归:typert-gateway 必须加载(不再 pin disabled)。其 client 半是 client 端
+            // `remote` 服务的唯一提供者(super(ctx,'remote'));pin 掉 → remote 缺失 →
+            // api-remotes/client-runtime/locale 级联 pending → slots 缺失 → 32 个 client
+            // 插件首页 "Failed to load plugins"(M10-2 的 HTTP 层验证误判为已 resolved)。
+            assertThat(loaded).anySatisfy(lp ->
+                    assertThat(lp.entry().name()).isEqualTo("typert-gateway"));
+
             // base 树真实 dsh 插件经 Node 桥注册进 Java 核心(system-prompt)
             LoadedPlugin sp = loaded.stream()
                     .filter(lp -> "system-prompt".equals(lp.entry().name()))

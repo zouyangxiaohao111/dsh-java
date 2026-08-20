@@ -27,10 +27,15 @@
   # worker). M7-8 already established typert as client-only; pinned here.
 
 - id: typert-gateway
-  disabled: true
-  # typert client API gateway (@deepseek-ai/dsh-api-gateway, the typed-protocol
-  # transport for browser↔host typert RPC). Client-only surface (M7-8 pin);
-  # the web UI uses the @deepseek-ai/dsh-host-apiproxy gateway instead.
+  group: web
+  priority: true
+  # typert client API gateway (@deepseek-ai/dsh-api-gateway)。M8-1 pin disabled 是
+  # 误判("用 apiproxy 代替")—— 其 client 半是 client 端 `remote` 服务的唯一提供者
+  # (super(ctx,'remote'));pin 掉 → remote 缺失 → api-remotes/client-runtime/locale
+  # 级联 pending → slots(client-runtime 提供)缺失 → 32 个 client 插件 pending,首页
+  # "Failed to load plugins"。server 半仅 inject ['typert'](core 组跨 worker 可调),
+  # Java host 可激活;client 半依赖 typert+connection(browser 内均 ACTIVE)。
+  # 归 web 组共享 worker + priority 保证进 __DSH_BOOT__ manifest(client remote 早提供)。
 
 # ── M9-1:web 运行时进程组 ───────────────────────────────────────────────────
 # 同组 node 插件共享一个 NodeWorkerJsHost(同一 Node 进程):route handler 与 node:http
