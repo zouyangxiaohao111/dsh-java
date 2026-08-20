@@ -307,9 +307,13 @@
   # 定向不覆盖 name,故 insert native 后端行(Service 子类,加载即 provide directoryPicker),
   # 并禁用 auto。picker 交互是深度功能(pick 打开 OS 对话框),不触发不影响 UI 基本交互。
 - insert:
-    - id: directory-picker-native
-      name: '@deepseek-ai/dsh-host-directory-picker-native'
+    - id: directory-picker-browse
+      name: '@deepseek-ai/dsh-host-directory-picker-browse'
       group: web
+      # M11-3:后端用 browse 而非 native —— host.listDirectory 要求 capability.kind ===
+      # 'browse'(api-proxy.ts:2913);native 只有 pick(打开 OS 对话框),点击"添加工作区"
+      # → 目录浏览 host.listDirectory → "needs the browse capability" → HTTP 404 → 无法
+      # 创建首个工作区。browse 后端零依赖(node:fs 列目录),capability = browse。
     - id: ui-directory-picker-browse
       name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
       group: web

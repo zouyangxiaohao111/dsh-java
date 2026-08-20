@@ -259,6 +259,22 @@ function isLiveObject(v) {
 }
 
 /**
+ * 是否 shim Service 实例(cordis-shim Service 构造提供:name + ctx + $check)。
+ * M11-3:Service 的原型方法多用 symbol key(isLiveObject 的 getOwnPropertyNames 只查 string
+ * 名),ApiProxyService 等"字段承载业务面"的子类原型无 string 方法 → isLiveObject false →
+ * 走普通对象快照;而 provide 发生在 super()(子类字段如 apiProxy.host 赋值前)→ 快照丢失
+ * 字段 → 读方(connection)拿到的 apiProxy 无 host → host.listDirectory/describe 报
+ * "api.host undefined"(host.describe 失败 → connection lost)。识别为 live 句柄后,读方经桥
+ * 读实例,子类构造后期赋值的字段可见。
+ */
+function isServiceLike(v) {
+  return v !== null && typeof v === 'object'
+    && typeof v.name === 'string'
+    && typeof v.ctx === 'object'
+    && v.$check !== undefined
+}
+
+/**
  * 是否"纯迭代器/生成器":原型链成员只有迭代器协议(next/return/throw)。M7-8 用它区分
  * 两类"既是 iterable 又是 live 对象"的值:
  *   - 纯生成器/迭代器(gen()、iterator view)→ 仍是 {$kind:'iter'}(Java 侧 JsIterable 遍历);
@@ -314,7 +330,7 @@ function serializeValue(v, seen, opts) {
     // list()/get() + Symbol.iterator)必须保留方法面({$kind:'obj'}),否则 iter 分支会吞掉
     // 方法(Java 侧只得 JsIterable,方法不可调)。纯生成器/迭代器(isPureIterator)仍走 iter
     // 分支,保持 M7-7 语义(Java 侧 JsIterable 遍历)。
-    if (liveHandles && isLiveObject(v) && !isPureIterator(v)) {
+    if (liveHandles && (isLiveObject(v) || isServiceLike(v)) && !isPureIterator(v)) {
       const id = nextHandle++
       objById.set(id, v)
       return { $kind: 'obj', id }
