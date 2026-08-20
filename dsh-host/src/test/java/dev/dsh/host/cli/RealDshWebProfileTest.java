@@ -86,6 +86,11 @@ class RealDshWebProfileTest {
             Object svc = handle.ctx().get("systemPrompt");
             assertThat(svc).isInstanceOf(java.util.Map.class);
             assertThat(map(svc).get("name")).isEqualTo("systemPrompt");
+
+            // M11:apiProxy 必须提供 —— 依赖 workspace/storageDomain/directoryPicker 全链就绪。
+            // 缺失 → /api 404 → client remote 全失败 → web UI 无法交互(inert 工作区选择器)。
+            Object apiProxy = handle.ctx().get("apiProxy");
+            assertThat(apiProxy).isNotNull();
         }
     }
 

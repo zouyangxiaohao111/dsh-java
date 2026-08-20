@@ -300,7 +300,16 @@
 - id: session-stats
   group: web
 - id: directory-picker
-  group: web
+  disabled: true
+  # M11:web-app bundle 把 directory-picker 指向 auto(@deepseek-ai/dsh-host-directory-picker-auto,
+  # 其 apply 用 ctx.loader.create —— Java LoaderService 是 no-op,挂不上 native backend → 服务
+  # 缺失 → api-gateway PENDING → apiProxy 缺失 → /api 404 → web UI 无法交互)。patch 的 id
+  # 定向不覆盖 name,故 insert native 后端行(Service 子类,加载即 provide directoryPicker),
+  # 并禁用 auto。picker 交互是深度功能(pick 打开 OS 对话框),不触发不影响 UI 基本交互。
+- insert:
+    - id: directory-picker-native
+      name: '@deepseek-ai/dsh-host-directory-picker-native'
+      group: web
 - id: plugin-inventory
   group: web
 

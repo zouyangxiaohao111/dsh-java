@@ -667,7 +667,15 @@ function makeCtx(ctxId) {
     // 不受影响(仍 JSON),与 M7-7 兼容(方法返回的句柄化机制不变)。
     provide: (name, value) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'provide', args: [name, serializeValue(value, undefined, { liveHandles: true })] }),
     get: (name) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'get', args: [name] }),
-    inject: (deps, cb) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'inject', args: [deps.map(x => serializeValue(x)), serializeValue(cb)] }),
+    inject: (deps, cb) => {
+      // M11:ctx.inject(deps, cb) 的 cb 必须收到子 ctx(domainCtx) —— 真实 cordis 语义。
+      // Java doInject 给子 ctx 分配独立 ctxId 并作为 cb 参数传来;这里把 ctxId 转成
+      // makeCtx(子 ctx proxy)。此前桥只 invokeListener 空参数 → cb 的 domainCtx=undefined
+      // → storage-domain 等插件的 ctx.inject 回调里 provide 静默失败 → storageDomain 等
+      // 服务缺失 → workspace/api-gateway 级联 PENDING → /api 404 → web UI 无法交互。
+      const wrapped = (subCtxId) => cb(subCtxId === undefined ? undefined : makeCtx(subCtxId))
+      return syncBridgeCall('ctxCall', { ctx: ctxId, method: 'inject', args: [deps.map(x => serializeValue(x)), serializeValue(wrapped)] })
+    },
     accessor: (name, options) => syncBridgeCall('ctxCall', {
       ctx: ctxId, method: 'accessor',
       args: [name, options && typeof options.get === 'function' ? serializeValue(options.get) : null],

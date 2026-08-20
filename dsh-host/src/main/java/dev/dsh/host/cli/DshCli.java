@@ -118,6 +118,12 @@ public final class DshCli {
             ProfileBoot.Handle handle = dev
                     ? boot.bootOnceDev(profile, appArgs, out)
                     : boot.bootOnce(profile, appArgs, out);
+            // M11:懒加载后台线程完成后才提示 URL —— 否则用户打开 UI 时 web 核心服务
+            // (api-gateway 的 apiProxy 依赖 deferred workspace/storageDomain/directoryPicker)
+            // 尚未注册 → /api 404 → UI 渲染但无法交互(工作区选择器 inert)。settle 阻塞
+            // 等待后台全部加载;端口此时已绑(priority webserver),浏览器可见壳但 URL 打印
+            // 才意味着功能就绪。后台耗时主要来自 88 个 deferred 的顺序 registerAll(apply)。
+            handle.loader().settle();
             out.println();
             out.println("dshj: profile '" + profile + "' is running on the Java harness. Ctrl+C to stop.");
             if (dev) {

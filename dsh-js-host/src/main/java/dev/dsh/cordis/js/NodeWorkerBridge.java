@@ -221,7 +221,14 @@ public final class NodeWorkerBridge {
         String[] names = new String[deps.size()];
         for (int i = 0; i < deps.size(); i++) names[i] = deps.get(i).asText("");
         ctx.inject(Inject.of(names), (c, cfg) -> {
-            host.invokeListener(cb, new Object[0]);
+            // M11:真实 cordis 的 ctx.inject(deps, cb) 里 cb 收到子 ctx(domainCtx)。桥必须把
+            // 子 ctx 的 ctxId 传给 worker(worker 侧 makeCtx.inject 已包装 cb 参数 → makeCtx)。
+            // 此前只 invokeListener 空参数 → worker cb 的 domainCtx=undefined → provide 静默
+            // 失败 → storageDomain 等服务缺失 → workspace/api-gateway 级联 PENDING → /api 404
+            // → web UI 无法交互。子 ctx 用独立 bridge + Java 高位 ctxId(registerChildCtx 不请求
+            // worker —— reader 线程上 createCtx 会与 worker 单线程的 apply 互等死锁)。
+            long childCtxId = host.registerChildCtx(new NodeWorkerBridge(host, c));
+            host.invokeListener(cb, new Object[]{ childCtxId });
             return null;
         });
         return NullNode.instance;

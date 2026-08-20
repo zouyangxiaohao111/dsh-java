@@ -93,6 +93,11 @@ public final class NodeWorkerJsHost implements JsHost {
 
     private final AtomicLong seq = new AtomicLong(1);
     private final AtomicLong serviceSeq = new AtomicLong(1_000_000);
+    /** M11:ctx.inject 子 ctx 的独立 ctxId 空间 —— worker nextHandle 为低位递增(0,1,2...),
+     *  子 ctx 用 1 亿起的独立区间,免 createCtx 请求 worker(reader 线程上 createCtx 阻塞会与
+     *  worker 单线程的 apply 互等死锁 → node worker is not alive)。必须 < 2^53(JS Number
+     *  精确整数上限),否则经 JSON 传给 worker 的 ctxId 精度丢失 → makeCtx 路由错 bridge。 */
+    private final AtomicLong childCtxSeq = new AtomicLong(100_000_000L);
     /** M8 low ②:跨 worker 句柄转发专用固定大小 daemon 线程池 —— 复用线程、限制并发(原虚拟
      *  线程每任务一线程,并发无界)。reader 线程只入队不阻塞;池线程阻塞等属主 worker 回复
      *  (reader 线程继续泵消息,防互等死锁)。宿主 close() 时 shutdownNow 回收。 */
@@ -257,6 +262,14 @@ public final class NodeWorkerJsHost implements JsHost {
         bridges.put(id, bridge);
         bridge.ctxId(id);
         return ctxRef;
+    }
+
+    /** M11:ctx.inject 子 ctx 注册(不请求 worker,reader 线程安全)。返回子 ctxId。 */
+    long registerChildCtx(NodeWorkerBridge bridge) {
+        long id = childCtxSeq.getAndIncrement();
+        bridges.put(id, bridge);
+        bridge.ctxId(id);
+        return id;
     }
 
     /** 调插件 apply(module, ctx, config),返回反序列化结果(disposer 为 fn 句柄)。 */
