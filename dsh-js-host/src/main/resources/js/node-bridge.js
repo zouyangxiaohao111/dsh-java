@@ -317,6 +317,15 @@ function serializeValue(v, seen, opts) {
   }
   if (t === 'bigint') return { $kind: 'bigint', value: v.toString() }
   if (t === 'function') {
+    // M11-4:schemastery schema 是可调用函数(live 对象)。跨 worker 传参时,function 分支
+    // 会把它当普通回调(fn 句柄)→ 接收方拿 NodeRef(无方法)→ settings.register 的 schema
+    // 在 core worker 无 toJSON → settings.describe 挂(welcome 确认 / 凭据引导全卡)。
+    // 带 toJSON 的"函数即 schema"(live)作为 obj 句柄(live 对象),方法经桥可调。
+    if (liveHandles && typeof v.toJSON === 'function') {
+      const id = nextHandle++
+      objById.set(id, v)
+      return { $kind: 'obj', id }
+    }
     const id = nextHandle++
     fnById.set(id, v)
     const out = { $kind: 'fn', id }

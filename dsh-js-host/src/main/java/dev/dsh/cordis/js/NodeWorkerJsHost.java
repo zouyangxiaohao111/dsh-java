@@ -369,7 +369,7 @@ public final class NodeWorkerJsHost implements JsHost {
             return ServiceInvoker.invoke(svc, method, args);
         }
         NodeWorkerJsHost owner = ownerOf(handle);
-        if (owner == null) throw new NodeBridgeError("unknown service handle " + handle);
+        if (owner == null) throw new NodeBridgeError("unknown service handle " + handle + " method=" + method);
         if ("$members".equals(method)) return owner.invokeMembersRpc(handle);
         if ("$get".equals(method)) {
             String name = args.isEmpty() ? "" : String.valueOf(args.get(0));

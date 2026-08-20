@@ -79,7 +79,11 @@
 - id: ui-settings
   group: web
 - id: ui-settings-general
-  group: web
+  group: core
+  # M11-4:注册 ui-onboarding(欢迎弹窗确认的持久化 namespace)。server 半只依赖 settings;
+  # 在 core 组(与 settings 同 worker)本地 register —— 跨 worker 传 schemastery schema
+  # (可调用函数)经桥 $call 句柄失效 → register resolve 抛 → namespace 未注册 → welcome
+  # "暂时无法保存确认状态"。client 半仍进 __DSH_BOOT__(modules 扫描 loader 级,不受 group 影响)。
 - id: ui-settings-models
   group: web
 - id: ui-settings-plugin-inventory
