@@ -405,6 +405,17 @@ function serializeValue(v, seen, opts) {
     } else {
       out = {}
       for (const k of Object.keys(v)) out[k] = serializeValue(v[k], active, opts)
+      // M11-7:symbol key(如 dsh-scope 的 kScope = Symbol('dsh.scope'),createScope 经
+      // ctx.extend({[kScope]: key}) 设 scope key)序列化为 "$symbol$<desc>" 键 ——
+      // Java doExtend 存到 child.symbolProps,跨 worker 读方(makeCtx proxy 对 symbol 属性
+      // 经 ctxCall symbolGet)路由回属主取回(scopeOf(agentCtx) 同形)。排除内置 symbol
+      // (iterator/toStringTag 等,不应跨桥传输)。
+      for (const s of Object.getOwnPropertySymbols(v)) {
+        const desc = s.description || String(s)
+        if (desc === 'Symbol.iterator' || desc === 'Symbol.toStringTag'
+            || desc === 'Symbol.asyncIterator' || desc === 'Symbol.hasInstance') continue
+        out['$symbol$' + desc] = serializeValue(v[s], active, opts)
+      }
     }
     active.delete(v)
     return out
@@ -437,17 +448,33 @@ function deserializeValue(v) {
     // → 经 Java 路由到属主 worker 执行(invokeService '$call' → FUNCTION_OWNERS → 属主宿主
     // invokeFn)。Java 侧无该句柄路由(真正陈旧/已 release)→ 抛错 → 降级为 no-op stub
     // (保持 M7-6 容忍语义,不挂加载)。
-    const remote = function () {
-      const args = Array.prototype.slice.call(arguments)
-      try {
+    // M11-7:按 async 标记分流 —— async fn(agents.create 的 setup,内部 fs.stat/动态 import
+    // 依赖 macrotask)跨 worker 调用必须异步(asyncBridgeCall 返回 Promise):调用方 worker
+    // (core)的 await 挂起但事件循环自由,能响应回调执行期间的跨 worker ctxCall(如 setup
+    // 读 agentCtx.agent → core ctx.get → accessor getter 经桥回 core worker)→ 互等解除。
+    // 同步 fn(registerProvider 的 create)保持同步 stub(既有同步回调语义)。
+    if (v.async === true) {
+      const remoteAsync = function () {
+        const args = Array.prototype.slice.call(arguments)
         // liveHandles:回调参数里的 live 对象(如 service 传的 AbortSignal)以句柄跨桥,属主
         // worker 之外仍可调方法(skill FileSystemSkillProvider 的 control.signal.addEventListener
         // 同形);纯数据参数不受影响。
-        // M11-6:同步保持 —— 跨 worker fn 回调的调用方可能是同步方法(registerProvider 的
-        // create)或 await 的 async 方法(agents.create 的 setup)。同步泵不占**属主 worker**
-        // 的事件循环(回调在属主 worker 执行,其 macrotask 由属主的事件循环跑)——只要发起
-        // 方 worker(如 web 调 agents.create)已异步化、其事件循环自由,回调内部 fs.stat 等
-        // macrotask 就能跑,互等解除。故此处保持同步,兼容同步回调调用方。
+        return asyncBridgeCall('invokeService', {
+          handle: v.id, method: '$call',
+          args: args.map(x => serializeValue(x, undefined, { liveHandles: true })),
+        }).catch((e) => {
+          if (remoteAsync._warned) return undefined
+          remoteAsync._warned = true
+          process.stderr.write('node-bridge: remote fn handle ' + v.id + ' invocation failed ('
+            + (e && e.message ? e.message : e) + '); no-op\n')
+          return undefined
+        })
+      }
+      return remoteAsync
+    }
+    const remote = function () {
+      const args = Array.prototype.slice.call(arguments)
+      try {
         return syncBridgeCall('invokeService', {
           handle: v.id, method: '$call',
           args: args.map(x => serializeValue(x, undefined, { liveHandles: true })),
@@ -815,7 +842,7 @@ function makeCtx(ctxId) {
       const wrapped = (subCtxId) => cb(subCtxId === undefined ? undefined : makeCtx(subCtxId))
       return syncBridgeCall('ctxCall', { ctx: ctxId, method: 'inject', args: [deps.map(x => serializeValue(x)), serializeValue(wrapped)] })
     },
-    extend: (meta) => makeCtx(syncBridgeCall('ctxCall', { ctx: ctxId, method: 'extend', args: [serializeValue(meta)] })),
+    extend: (meta) => makeCtx(syncBridgeCall('ctxCall', { ctx: ctxId, method: 'extend', args: [serializeValue(meta, undefined, { liveHandles: true })] })),
     accessor: (name, options) => syncBridgeCall('ctxCall', {
       ctx: ctxId, method: 'accessor',
       args: [name, options && typeof options.get === 'function' ? serializeValue(options.get) : null],
@@ -985,7 +1012,12 @@ function makeCtx(ctxId) {
     get(target, prop, receiver) {
       if (prop === CTX_MARK) return ctxId
       if (prop in target) return Reflect.get(target, prop, receiver)
-      if (typeof prop === 'symbol') return undefined
+      if (typeof prop === 'symbol') {
+        // M11-7:symbol 属性(如 dsh-scope 的 kScope —— scopeOf(agentCtx) 读 ctx[kScope])
+        // 经 ctxCall symbolGet 路由回属主 ctx 的 symbolProps(createScope 经
+        // extend({[kScope]: key}) 存入)。跨 worker 的 agentCtx 远程代理由此读到 scope key。
+        return syncBridgeCall('ctxCall', { ctx: ctxId, method: 'symbolGet', args: [String(prop.description || prop)] })
+      }
       return ctx.get(String(prop))
     },
     has(target, prop) {

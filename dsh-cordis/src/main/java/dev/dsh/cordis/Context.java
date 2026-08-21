@@ -24,6 +24,16 @@ public final class Context {
     /** Listener filter consulted on event dispatch (reflect.ts proxy filter). */
     public Predicate<Context> filter;
 
+    /** M11-7:extend(meta) 的普通 meta key = 本 ctx 的 own property(真实 cordis 语义:
+     *  {@code ctx.extend({agent})} 使 {@code agentCtx.agent} 可读,own property 遮蔽
+     *  accessor/继承)。此前构造器只处理 ISOLATE/INTERCEPT/fiber/baseUrl,agent 被忽略 →
+     *  跨 worker setup 读 {@code agentCtx.agent} 走 accessor(默认 getter)得 undefined。 */
+    final Map<String, Object> ownProps = new java.util.concurrent.ConcurrentHashMap<>();
+    /** M11-7:extend(meta) 的 Symbol key(symbol 描述 → 值),如 dsh-scope 的
+     *  {@code createScope(ctx, key) → ctx.extend({[kScope]: key})} —— scope key 经此存下,
+     *  跨 worker 读方(makeCtx proxy 对 symbol 属性)经 ctxCall symbolGet 路由回属主读取。 */
+    final Map<String, Object> symbolProps = new java.util.concurrent.ConcurrentHashMap<>();
+
     /** The fiber owning this context (rebound to the plugin fiber by the Fiber ctor). */
     public Fiber fiber;
     public final Reflect reflect;
@@ -118,6 +128,21 @@ public final class Context {
             }
             if (meta.containsKey("fiber") && meta.get("fiber") instanceof Fiber f) this.fiber = f;
             if (meta.containsKey("baseUrl")) this.baseUrl = String.valueOf(meta.get("baseUrl"));
+            // M11-7:meta 普通 key = own property(遮蔽 accessor/继承)。真实 cordis 的
+            // ctx.extend({agent}) 使 agentCtx.agent 可读;Java 此前忽略 → 跨 worker setup
+            // 读 .agent 得 undefined("agent setup has no scoped agent")。
+            for (Map.Entry<String, Object> e : meta.entrySet()) {
+                String k = e.getKey();
+                if (Symbols.ISOLATE.equals(k) || Symbols.INTERCEPT.equals(k)
+                        || "fiber".equals(k) || "baseUrl".equals(k)) continue;
+                // M11-7:serializeValue 把 extend meta 的 Symbol key(如 dsh-scope kScope)序列化
+                // 为 "$symbol$<desc>" → 存到 symbolProps(跨 worker 读方经 ctxCall symbolGet 取回)。
+                if (k.startsWith("$symbol$")) {
+                    this.symbolProps.put(k.substring("$symbol$".length()), e.getValue());
+                } else {
+                    this.ownProps.put(k, e.getValue());
+                }
+            }
         }
     }
 
@@ -126,6 +151,12 @@ public final class Context {
     /** Read a service by name (proxy-get equivalent). */
     @SuppressWarnings("unchecked")
     public <T> T get(String name) {
+        // M11-7:own property(extend meta 普通 key)优先于 accessor/服务 —— 真实 cordis 里
+        // Agent.ctx 的 own property agent 遮蔽 accessor('agent')。跨 worker setup 经远程 ctx
+        // 读 agentCtx.agent 走 ctx.get('agent') 到 core,此处返回 agent 句柄。
+        for (Context c = this; c != null; c = c.parent) {
+            if (c.ownProps.containsKey(name)) return (T) c.ownProps.get(name);
+        }
         Reflect.Property prop = this.reflect.props.get(name);
         if (prop instanceof Reflect.Property.Accessor acc) {
             return (T) acc.get.apply(this, this.receiver);
@@ -186,6 +217,15 @@ public final class Context {
         } catch (CordisError e) {
             return (T) NO_SERVICE;
         }
+    }
+
+    /** M11-7:读本 ctx(沿 parent 链)的 symbol 属性(symbol 描述 → 值,如 dsh-scope 的 scope
+     *  key kScope)。桥的 doSymbolGet 经 ctxCall 路由跨 worker 读方(scopeOf(agentCtx))。 */
+    public Object getSymbol(String desc) {
+        for (Context c = this; c != null; c = c.parent) {
+            if (c.symbolProps.containsKey(desc)) return c.symbolProps.get(desc);
+        }
+        return null;
     }
 
     /** Overwrite a provided service's value; computed accessors route to their setter. */

@@ -506,7 +506,7 @@ public final class NodeWorkerJsHost implements JsHost {
         long g = GLOBAL_FN_ID.getAndIncrement();
         sendNoWait("rehandleFn", jsonOf("from", local, "to", g));
         FUNCTION_OWNERS.put(g, this);
-        return new NodeRef(g, "fn");
+        return new NodeRef(g, "fn", fn.async());
     }
 
     /** 递归导出跨 worker 服务参数里的 fn 句柄(仅对指向本 worker 的本地句柄导出;全局句柄 /
@@ -854,6 +854,9 @@ public final class NodeWorkerJsHost implements JsHost {
             ObjectNode n = mapper.createObjectNode();
             n.put("$kind", ref.kind());
             n.put("id", ref.id());
+            // M11-7:fn 的 async 标记跨 worker 转发保留(读方 remote stub 据此分流
+            // async fn → 异步调用,同步 fn → 同步)。
+            if ("fn".equals(ref.kind()) && ref.async()) n.put("async", true);
             return n;
         }
         // M7-7:JS 侧句柄原样回传(JsIterable 也是 Iterable,必须先于 Iterable 物化判定)。
@@ -921,7 +924,8 @@ public final class NodeWorkerJsHost implements JsHost {
             String kind = v.path("$kind").asText();
             long id = v.path("id").asLong(-1);
             switch (kind) {
-                case "fn", "module", "ctx", "svc" -> { return new NodeRef(id, kind); }
+                case "fn" -> { return new NodeRef(id, "fn", v.path("async").asBoolean(false)); }
+                case "module", "ctx", "svc" -> { return new NodeRef(id, kind); }
                 case "obj" -> {
                     // JS 侧 live 对象 → RemoteObject(方法调用 RPC 回 worker);注册 remote 句柄
                     // 供 worker 经 invokeService 调用时转发,并挂 Cleaner 兜底 GC 释放。

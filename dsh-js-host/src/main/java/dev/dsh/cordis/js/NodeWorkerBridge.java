@@ -64,6 +64,8 @@ public final class NodeWorkerBridge {
                 return doProvide(args);
             case "get":
                 return doGet(args);
+            case "symbolGet":
+                return doSymbolGet(args);
             case "mixin":
                 return doMixin(args);
             case "inject":
@@ -195,6 +197,16 @@ public final class NodeWorkerBridge {
         return host.toJsonNode(exposeService(svc));
     }
 
+    /** M11-7:{@code ctx[symbol]}(如 dsh-scope 的 kScope —— scopeOf(agentCtx) 读 ctx[kScope]):
+     *  读属主 ctx 的 symbolProps(createScope 经 extend({[kScope]: key}) 存入;serializeValue
+     *  把 symbol key 序列化为 "$symbol$<desc>")。沿 parent 链查(scope key 继承)。 */
+    private JsonNode doSymbolGet(JsonNode args) {
+        String desc = args.path(0).asText("");
+        Object v = ctx.getSymbol(desc);
+        if (v == null) return host.toJsonNode(NodeWorkerJsHost.UNDEFINED);
+        return host.toJsonNode(v);
+    }
+
     /** {@code ctx.mixin(source, keys|renamed)}:把服务成员直接暴露到 ctx(Java Context.mixin
      *  已实现,accessor 转发;M7-6 桥面补齐)。keys 为字符串数组(同键暴露)或映射(重命名)。
      *  reader 线程非阻塞(纯注册,无往返)。 */
@@ -225,7 +237,11 @@ public final class NodeWorkerBridge {
             var it = args.get(0).fields();
             while (it.hasNext()) {
                 var e = it.next();
-                meta.put(e.getKey(), host.fromJsonNode(e.getValue()));
+                Object v = host.fromJsonNode(e.getValue());
+                // M11-7:meta 里的 live 对象(如 Agent.ctx 的 own property agent)迁全局
+                // (REMOTE_OBJ_OWNERS 属主路由),使跨 worker 读方(远程 ctx 的 ctx.get('agent'))
+                // 拿到可路由的句柄,经桥访问属主 worker 的 agent。
+                meta.put(e.getKey(), host.exportRemoteDeep(v));
             }
         }
         dev.dsh.cordis.Context child = ctx.extend(meta);
