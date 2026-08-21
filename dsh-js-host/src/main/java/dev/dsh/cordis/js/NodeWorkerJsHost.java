@@ -519,14 +519,21 @@ public final class NodeWorkerJsHost implements JsHost {
     }
 
     private Object exportFnDeepValue(Object v) {
-        if (v instanceof NodeRef ref && "fn".equals(ref.kind())) return exportFn(ref);
+        return exportFnDeepValueOn(this, v);
+    }
+
+    /** M11-10:属主感知的 fn 导出(跨 worker 返回值场景)—— fn 句柄属主是被调 worker(target),
+     *  必须在 target 上 exportFn(rehandleFn 发到属主 + FUNCTION_OWNERS 记属主),否则读方 worker
+     *  调用时 Java 路由不到属主 → unknown service handle(typert.local.get/hasSeen 等)。 */
+    private Object exportFnDeepValueOn(NodeWorkerJsHost owner, Object v) {
+        if (v instanceof NodeRef ref && "fn".equals(ref.kind())) return owner.exportFn(ref);
         // RemoteObject/JsIterable 是句柄(RemoteObject 因 Map 门面也是 Map,必须先于 Map 分支
         // 排除,否则会被当可变 Map 遍历/put → "read-only")。句柄原样保留,由 exportRemoteDeep
         // 统一导出。
         if (v instanceof RemoteObject || v instanceof JsIterable) return v;
         if (v instanceof Map<?, ?> m) {
             for (Map.Entry<?, ?> e : new ArrayList<>(m.entrySet())) {
-                Object nv = exportFnDeepValue(e.getValue());
+                Object nv = exportFnDeepValueOn(owner, e.getValue());
                 if (nv != e.getValue()) ((Map<Object, Object>) m).put(e.getKey(), nv);
             }
             return m;
@@ -534,7 +541,7 @@ public final class NodeWorkerJsHost implements JsHost {
         if (v instanceof List<?> list) {
             List<Object> mutable = (List<Object>) list;
             for (int i = 0; i < mutable.size(); i++) {
-                Object nv = exportFnDeepValue(mutable.get(i));
+                Object nv = exportFnDeepValueOn(owner, mutable.get(i));
                 if (nv != mutable.get(i)) mutable.set(i, nv);
             }
             return v;
@@ -750,11 +757,19 @@ public final class NodeWorkerJsHost implements JsHost {
         NodeWorkerJsHost target = FUNCTION_OWNERS.get(handle);
         if (target == null && !services.containsKey(handle)) target = ownerOf(handle);
         List<Object> javaArgs = toJavaArgs(argsNode);
-        if (target != null && target != this) {
+        boolean cross = (target != null && target != this);
+        if (cross) {
             javaArgs = exportFnDeep(javaArgs);
             exportRemoteDeep(javaArgs);   // 参数里的 live 对象(如回调的 AbortSignal)也导出,读方才可路由
         }
-        return exportRemoteDeep(invokeService(handle, method, javaArgs));
+        Object result = invokeService(handle, method, javaArgs);
+        if (cross) {
+            // M11-10:返回值里的 fn 句柄属主是被调 worker(target),必须在 target 上导出全局,
+            // 否则读方 worker 调用时 Java 路由不到属主 → unknown service handle(如 typert.local
+            // 的 get/hasSeen 箭头函数成员,跨 worker 时 claimsEndpoint 失败)。
+            result = exportFnDeepValueOn(target, result);
+        }
+        return exportRemoteDeep(result);
     }
 
     /** reader 线程上的句柄转发:helper 池线程阻塞等属主 worker 回复,reader 线程继续读

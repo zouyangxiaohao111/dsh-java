@@ -127,6 +127,8 @@ public final class PluginLoaderService implements AutoCloseable {
         for (Entry e : entries) {
             (e.priority() ? priorityEntries : deferredEntries).add(e);
         }
+        System.err.println("[BG] entries=" + entries.size() + " priority=" + priorityEntries.size()
+                + " deferred=" + deferredEntries.size());
         List<LoadedPlugin> next = new ArrayList<>();
         try {
             if (priorityEntries.isEmpty()) {
@@ -138,13 +140,16 @@ public final class PluginLoaderService implements AutoCloseable {
                 if (!deferredEntries.isEmpty()) {
                     Thread bg = Thread.ofVirtual().start(() -> {
                         try {
+                            System.err.println("[BG] background load start: " + deferredEntries.size());
                             List<LoadedPlugin> def = loadAll(deferredEntries);
+                            System.err.println("[BG] background loadAll done: " + def.size());
                             registerAll(def);
+                            System.err.println("[BG] background registerAll done: " + def.size());
                             synchronized (loaded) {
                                 loaded.addAll(def);
                             }
                         } catch (Exception e) {
-                            ctx.logger().error("background lazy load/apply failed", e);
+                            e.printStackTrace();
                         }
                     });
                     settlingThread = bg;

@@ -90,6 +90,14 @@ public final class NodeWorkerBridge {
                 return doFiberAssertActive();
             case "baseUrl":
                 return doBaseUrl();
+            case "setBaseUrl":
+                return doSetBaseUrl(args);
+            case "reflectNotify":
+                return NullNode.instance;   // loader 刷新通知 no-op(Java 核心同步驱动加载)
+            case "reflectProvide":
+                return NullNode.instance;
+            case "reflectGet":
+                return host.toJsonNode(NodeWorkerJsHost.UNDEFINED);
             default:
                 throw new NodeBridgeError("unknown ctx method " + method);
         }
@@ -117,6 +125,12 @@ public final class NodeWorkerBridge {
         return base == null || base.isEmpty()
                 ? host.toJsonNode(NodeWorkerJsHost.UNDEFINED)
                 : host.toJsonNode(base);
+    }
+
+    /** {@code ctx.baseUrl = v}:preset 组合(Include 构造)写回 Java 核心 root.baseUrl。 */
+    private JsonNode doSetBaseUrl(JsonNode args) {
+        ctx.baseUrl = args.path(0).asText("");
+        return NullNode.instance;
     }
 
     // ---- ctx 方法实现 ----

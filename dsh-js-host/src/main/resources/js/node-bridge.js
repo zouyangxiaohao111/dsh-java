@@ -474,11 +474,19 @@ function deserializeValue(v) {
     }
     const remote = function () {
       const args = Array.prototype.slice.call(arguments)
+      const serialized = args.map(x => serializeValue(x, undefined, { liveHandles: true }))
+      if (serialized.some(a => hasSerializedRemoteHandle(a, 3))) {
+        return asyncBridgeCall('invokeService', { handle: v.id, method: '$call', args: serialized })
+          .catch((e) => {
+            if (remote._warned) return undefined
+            remote._warned = true
+            process.stderr.write('node-bridge: remote fn handle ' + v.id + ' invocation failed ('
+              + (e && e.stack ? e.stack : e) + '); no-op\n')
+            return undefined
+          })
+      }
       try {
-        return syncBridgeCall('invokeService', {
-          handle: v.id, method: '$call',
-          args: args.map(x => serializeValue(x, undefined, { liveHandles: true })),
-        })
+        return syncBridgeCall('invokeService', { handle: v.id, method: '$call', args: serialized })
       } catch (e) {
         if (remote._warned) return undefined
         remote._warned = true
@@ -528,6 +536,42 @@ function deserializeValue(v) {
 // (触发 worker 侧 getter)。这样 `ctx.shell.sandboxMode`(permission 同形)读到真实值
 // 而不是一个函数;`ctx.agents.list()` 仍是方法调用。
 // then 返回 undefined,避免 JS Promise 把服务对象误当 thenable 吸收。
+// ---- M11-11:跨 worker live 对象标记与序列化后检测(死锁防护)----
+// 跨 worker fn 回调(remote stub)的参数若含"经桥 live 对象"(makeCtx 代理 / makeServiceProxy /
+// 序列化后的 {$kind:'obj'|'ctx'|'svc'|'iter'} 句柄),fn 内部几乎必然反向调用属主 worker
+// (读属性、调方法),而调用方若用 syncBridgeCall 占住事件循环 → 属主 worker 的反向调用无人处理
+// → 互等死锁(invokeFn 120s 超时)。检测到参数含远程句柄时,即使 fn 未标 async 也走 asyncBridgeCall:
+// 调用方事件循环自由,能响应反向调用。
+const REMOTE_MARK = Symbol.for('dsh.remoteHandle')
+function isRemoteHandle(v) {
+  return !!v && (typeof v === 'function' || typeof v === 'object') && v[REMOTE_MARK] === true
+}
+/** 递归检测参数(含浅层嵌套)是否含跨 worker live 对象。 */
+function hasRemoteHandle(v, depth) {
+  if (v === null || v === undefined) return false
+  if (isRemoteHandle(v)) return true
+  if (depth <= 0 || typeof v !== 'object') return false
+  for (const k of Object.keys(v)) {
+    if (hasRemoteHandle(v[k], depth - 1)) return true
+  }
+  return false
+}
+/** 序列化后检测 —— 本地 live 对象(如 Session 实例)经 serializeValue liveHandles 变
+ *  {$kind:'obj'} 句柄,读方(跨 worker)经桥路由回属主。参数序列化结果含此类句柄 → fn 内部
+ *  访问它必然反向调用属主 → 必须异步(防互等死锁)。 */
+function hasSerializedRemoteHandle(v, depth) {
+  if (v === null || v === undefined) return false
+  if (typeof v === 'object') {
+    const k = v.$kind
+    if (k === 'obj' || k === 'ctx' || k === 'svc' || k === 'iter') return true
+  }
+  if (depth <= 0 || typeof v !== 'object') return false
+  for (const k of Object.keys(v)) {
+    if (hasSerializedRemoteHandle(v[k], depth - 1)) return true
+  }
+  return false
+}
+
 function makeServiceProxy(handle) {
   // M7-8:参数带 liveHandles 序列化 —— 方法参数里的 live 对象(如 llm.registerAdapter 的
   // adapter 类实例)以句柄跨桥,读方可路由回属主调用其方法;纯数据参数不受影响(不强转)。
@@ -570,6 +614,7 @@ function makeServiceProxy(handle) {
   return new Proxy(callable, {
     get(target, prop, receiver) {
       if (prop === 'then') return undefined
+      if (prop === REMOTE_MARK) return true
       if (prop === Symbol.iterator) {
         // Java Iterable/Iterator 服务 → JS 可 for...of(经桥 RPC hasNext/next 适配)。
         // 先尝试经 iterator() 拿到 Java 侧 java.util.Iterator 句柄;若对象本身是
@@ -974,12 +1019,41 @@ function makeCtx(ctxId) {
   Object.defineProperty(ctx, 'fiber', { value: fiberProxy, enumerable: false, writable: true, configurable: true })
   // ctx.baseUrl 经桥到 Java 核心 root.baseUrl(hmr 的 new URL(config.base||'.', ctx.baseUrl)
   // 需要;未设置 → undefined)。非可枚举:进 target 使 Proxy get 走 Reflect.get,不经 ctx.get()。
+  // baseUrl:本地可写(preset 组合的 Include 构造设 ctx.baseUrl 做相对 URL 解析 —— 经桥 setter
+  // 在加载期触发 syncBridgeCall 会破坏 registerAll,故本地存),读优先本地,fallback 到 Java。
+  let localBaseUrl
   Object.defineProperty(ctx, 'baseUrl', {
     get: () => {
+      if (localBaseUrl !== undefined) return localBaseUrl
       const v = syncBridgeCall('ctxCall', { ctx: ctxId, method: 'baseUrl', args: [] })
       return v === undefined ? undefined : v
     },
+    set: (v) => { localBaseUrl = String(v) },
     enumerable: false, configurable: true,
+  })
+  // M11-8:ctx.reflect(cordis-plugin-loader 的 EntryTree.await() 读 ctx.reflect.notify;挂载
+  // preset 的组合树 await 时反射 undefined → "reading notify")。桥代理暴露 reflect 面,
+  // notify/provide/get 经 ctxCall 回 Java(loader 的刷新通知 no-op 记录,不触发重载)。
+  Object.defineProperty(ctx, 'reflect', {
+    value: {
+      store: Object.create(null),   // 挂载组合的服务注册表(本地;loader 读 reflect.store[symbol])
+      notify: (names = []) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'reflectNotify', args: [names] }),
+      provide: (name, value) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'reflectProvide', args: [name, serializeValue(value)] }),
+      get: (name) => syncBridgeCall('ctxCall', { ctx: ctxId, method: 'reflectGet', args: [name] }),
+    },
+    enumerable: false, writable: true, configurable: true,
+  })
+  // M11-8:cordis 的 Context.isolate/intercept Symbol —— loader 挂载组合时
+  // (Entry._start 前)用 Object.create/setPrototypeOf/swap 操作 ctx[Symbol('cordis.isolate')],
+  // 桥代理若经 symbolGet 返回 undefined 会崩("reading Symbol(cordis.isolate)")。暴露本地
+  // 空对象(loader 的 Object.create 链在本地建立,挂载插件的服务隔离语义本地成立)。
+  Object.defineProperty(ctx, Symbol.for('cordis.isolate'), {
+    value: Object.create(null),
+    enumerable: false, writable: true, configurable: true,
+  })
+  Object.defineProperty(ctx, Symbol.for('cordis.intercept'), {
+    value: Object.create(null),
+    enumerable: false, writable: true, configurable: true,
   })
   // cordis 框架方法(M7-6):ctx.mixin(source, keys|renamed) 把服务成员直接暴露到 ctx
   // (reflect.ts:364-390)。Java Context.mixin 已有(accessor 转发),这里暴露给 shim。
@@ -1011,6 +1085,12 @@ function makeCtx(ctxId) {
   const proxy = new Proxy(ctx, {
     get(target, prop, receiver) {
       if (prop === CTX_MARK) return ctxId
+      if (prop === REMOTE_MARK) return true
+      // M11-9:ctx.root —— 真实 cordis Context 构造器把 root 指向自身 proxy;agent-presets 的
+      // leakedServices 读 ctx.root[Symbol.for('cordis.isolate')] 判泄漏。桥代理此前无 root →
+      // ctx.get('root') 回 Java 返回 undefined → "reading Symbol(cordis.isolate)"。这里 root
+      // 指向自身:本地 isolate/intercept map 恒空,泄漏检查保守(永不误报),挂载不崩。
+      if (prop === 'root') return proxy
       if (prop in target) return Reflect.get(target, prop, receiver)
       if (typeof prop === 'symbol') {
         // M11-7:symbol 属性(如 dsh-scope 的 kScope —— scopeOf(agentCtx) 读 ctx[kScope])
