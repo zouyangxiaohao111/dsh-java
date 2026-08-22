@@ -183,7 +183,10 @@
 - id: session-query-sqlite
   group: core
 - id: session-projection
-  group: core
+  group: web
+  # M11-8:投影系统与投影 cache / apiproxy 同 worker(web 组)—— session-projection 在 core
+  # 时 drive 读 web 组的 projection-cache → 跨 worker 同步互等死锁(web 等 core 读 session.id,
+  # core 等 web 执行投影 fn)。同组消除跨 worker 投影读写环。
 - id: session-telemetry-otel
   group: core
 - id: subprocess

@@ -543,6 +543,10 @@ function deserializeValue(v) {
 // → 互等死锁(invokeFn 120s 超时)。检测到参数含远程句柄时,即使 fn 未标 async 也走 asyncBridgeCall:
 // 调用方事件循环自由,能响应反向调用。
 const REMOTE_MARK = Symbol.for('dsh.remoteHandle')
+// 泵内 dispatch 深度:泵内分发 invokeObj/invokeFn 等时,direct 处理的消息的 JS 函数若反向
+// syncBridgeCall(嵌套泵),嵌套泵内不得再次 dispatch(会无限嵌套,回复永远读不到)——嵌套泵
+// 把新到消息 deferred,泵只等自己的回复。
+let pumpDispatchDepth = 0
 function isRemoteHandle(v) {
   return !!v && (typeof v === 'function' || typeof v === 'object') && v[REMOTE_MARK] === true
 }
@@ -584,7 +588,13 @@ function makeServiceProxy(handle) {
   // 死锁);同步 fn/纯数据 → 同步(既有语义)。
   const invoke = (method, args) => {
     const serialized = args.map(x => serializeValue(x, undefined, { liveHandles: true }))
-    if (hasAsyncFnHandle(serialized)) {
+    // M11-8:async 方法标记($members 标记的 async JS/Java 方法)→ 异步调用(不 park 事件循环,
+    // 防跨 worker 同步互等死锁 —— agentPresets.resolve/mount 等 async 方法跨 worker 同步调
+    // 用会 park 本 worker,而属主 worker 的反向调用(如 agents.create 的 setup 回调)需要本
+    // worker 响应 → 互等)。参数带 async fn 回调同理。同步 fn/纯数据/本地 svc 保持同步(既有
+    // 语义:parseCmdline 等需要同步返回值)。
+    const mk = kinds().get(method)
+    if (hasAsyncFnHandle(serialized) || (mk && mk.fn && mk.async)) {
       return asyncBridgeCall('invokeService', { handle, method, args: serialized })
     }
     return syncBridgeCall('invokeService', { handle, method, args: serialized })
@@ -601,7 +611,7 @@ function makeServiceProxy(handle) {
         if (Array.isArray(list)) {
           for (const it of list) {
             if (it && typeof it === 'object' && typeof it.name === 'string') {
-              memberKinds.set(it.name, it.type === 'function' ? 'function' : 'value')
+              memberKinds.set(it.name, { fn: it.type === 'function', async: !!it.async })
             }
           }
         }
@@ -641,7 +651,8 @@ function makeServiceProxy(handle) {
       if (typeof prop === 'symbol') return undefined
       const name = String(prop)
       // getter/数据字段成员 → 直接读值(invokeService '$get' → invokeGet 触发 getter)。
-      if (kinds().get(name) === 'value') return invokeSync('$get', [name])
+      const k = kinds().get(name)
+      if (k && !k.fn) return invokeSync('$get', [name])
       return (...args) => invoke(name, args)
     },
   })
@@ -765,8 +776,21 @@ function syncBridgeCall(type, payload) {
     // 泵内不得分发 'apply'/'load' 等重型请求(它们会再进泵,语义不受益)。
     if (msg.type === 'invokeObj' || msg.type === 'invokeGet' || msg.type === 'invokeMembers'
         || (msg.type === 'invokeFn' && isGlobalFnHandle(msg.handle))) {
-      dispatchRequest(msg)
-      pumpMicrotasks()
+      // 嵌套泵(dispatch 上下文内):不再 dispatch —— 被处理消息的 JS 函数反向 syncBridgeCall
+      // 进入本泵,若再 dispatch 新消息 → 无限嵌套,本泵的回复永远读不到(agent 创建的
+      // internal/status 投影死锁)。deferred 入队,泵只等自己的回复;泵返回后事件循环 drain。
+      if (pumpDispatchDepth > 0) {
+        deferred.push(msg)
+        scheduleDeferredDrain()
+        continue
+      }
+      pumpDispatchDepth++
+      try {
+        dispatchRequest(msg)
+        pumpMicrotasks()
+      } finally {
+        pumpDispatchDepth--
+      }
       continue
     }
     // 不是本请求的回复:可能是 Java 并发发来的请求(如 invokeFn)或其它异步桥的回复
@@ -1408,22 +1432,27 @@ async function handleRequest(msg) {
       if (typeof msg.handle !== 'number') throw new Error('bad obj handle ' + JSON.stringify(msg.handle))
       const obj = objById.get(msg.handle)
       if (obj === undefined) throw new Error('unknown obj handle ' + msg.handle)
-      const seen = new Map()   // name → type
+      const seen = new Map()   // name → { type, async }
       for (let o = obj; o !== null && o !== Object.prototype; o = Object.getPrototypeOf(o)) {
         for (const n of Object.getOwnPropertyNames(o)) {
           if (n === 'constructor' || seen.has(n)) continue
           const d = Object.getOwnPropertyDescriptor(o, n)
           let type = 'function'   // 未知成员默认方法(兼容 M7-7:一切可调用)
+          let asyncFlag = false
           if (d) {
-            if (typeof d.value === 'function') type = 'function'
-            else if (typeof d.get === 'function' || typeof d.set === 'function') type = 'value'
+            if (typeof d.value === 'function') {
+              type = 'function'
+              // M11-8:async 方法标记 —— 读方服务代理据此走 asyncBridgeCall(不 park 事件循环),
+              // 防跨 worker 同步互等死锁(agentPresets.resolve/mount 是 async JS 方法)。
+              asyncFlag = d.value.constructor && d.value.constructor.name === 'AsyncFunction'
+            } else if (typeof d.get === 'function' || typeof d.set === 'function') type = 'value'
             else type = 'value'
           }
-          seen.set(n, type)
+          seen.set(n, { type, async: asyncFlag })
         }
       }
       const out = []
-      for (const [name, type] of seen) out.push({ name, type })
+      for (const [name, meta] of seen) out.push({ name, type: meta.type, async: meta.async })
       return { type: 'result', id: msg.id, value: out }
     }
     case 'rehandleObj': {

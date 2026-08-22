@@ -1007,7 +1007,10 @@ public final class NodeWorkerJsHost implements JsHost {
             for (Method m : svc.getClass().getMethods()) {
                 if (m.getDeclaringClass() == Object.class) continue;
                 methods.add(m.getName());
-                out.add(Map.of("name", m.getName(), "type", "function"));
+                // M11-8:async 方法标记(返回 CompletableFuture 等异步类型)—— 读方 worker 的
+                // 服务代理据此走 asyncBridgeCall(不 park 事件循环),防跨 worker 同步互等死锁。
+                boolean isAsync = java.util.concurrent.CompletableFuture.class.isAssignableFrom(m.getReturnType());
+                out.add(Map.of("name", m.getName(), "type", "function", "async", isAsync));
             }
             for (Field f : svc.getClass().getFields()) {
                 if (Modifier.isStatic(f.getModifiers())) continue;
