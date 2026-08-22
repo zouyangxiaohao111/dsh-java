@@ -240,7 +240,9 @@
 - id: plan-mode
   group: core
 - id: token-meter
-  group: core
+  group: web
+  # M11-8:token-meter 注入 sessionProjections —— 与投影系统同 worker(web 组),避免跨
+  # worker 同步读投影状态互等死锁。
 - id: compaction-basic
   group: core
 - id: command-compact

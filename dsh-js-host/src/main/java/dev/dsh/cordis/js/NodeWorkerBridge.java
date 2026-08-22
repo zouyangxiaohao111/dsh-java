@@ -351,7 +351,16 @@ public final class NodeWorkerBridge {
                         + "' (NEEDS: worker-initiated " + mode + " over mixed listeners)");
             }
         }
-        return host.toJsonArray(refs);
+        // M11-8:事件回调句柄导出为全局 fn —— dispatch 返回的 listener fn 可能被其它 worker
+        // 调用(agent 事件跨 worker 传播),本地 fn 句柄(worker 本地 id)跨 worker 调 $call 时
+        // Java 路由不到属主 → unknown service handle。导出后 FUNCTION_OWNERS 注册属主,跨
+        // worker 调用可路由回本 worker(registerListener 处导出会破坏加载期同步 listener,
+        // 这里只在事件 dispatch 时导出,加载期不受影响)。
+        List<Object> exported = new ArrayList<>(refs.size());
+        for (NodeRef ref : refs) {
+            exported.add(host.exportFn(ref));
+        }
+        return host.toJsonArray(exported);
     }
 
     private JsonNode doCommandRegister(JsonNode args) {
