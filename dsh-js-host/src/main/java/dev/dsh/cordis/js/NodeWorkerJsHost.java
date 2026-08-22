@@ -96,7 +96,7 @@ public final class NodeWorkerJsHost implements JsHost {
     private static final AtomicLong GLOBAL_FN_ID = new AtomicLong(GLOBAL_FN_ID_BASE);
 
     private final AtomicLong seq = new AtomicLong(1);
-    private final AtomicLong serviceSeq = new AtomicLong(1_000_000);
+    private final AtomicLong serviceSeq = new AtomicLong(50_000_000);
     /** M11:ctx.inject 子 ctx 的独立 ctxId 空间 —— worker nextHandle 为低位递增(0,1,2...),
      *  子 ctx 用 1 亿起的独立区间,免 createCtx 请求 worker(reader 线程上 createCtx 阻塞会与
      *  worker 单线程的 apply 互等死锁 → node worker is not alive)。必须 < 2^53(JS Number
@@ -500,7 +500,7 @@ public final class NodeWorkerJsHost implements JsHost {
      * fn id → 通知属主 worker 把 fnById 条目迁到全局 id(rehandleFn,fire-and-forget;泵内
      * 同步处理)→ 注册"全局 fn id → 属主宿主"路由。已是全局的句柄(透传)原样返回。
      */
-    private NodeRef exportFn(NodeRef fn) {
+    NodeRef exportFn(NodeRef fn) {
         long local = fn.id();
         if (FUNCTION_OWNERS.containsKey(local)) return fn;   // 已全局(透传)
         long g = GLOBAL_FN_ID.getAndIncrement();
