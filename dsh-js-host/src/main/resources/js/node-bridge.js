@@ -594,7 +594,9 @@ function makeServiceProxy(handle) {
     // worker 响应 → 互等)。参数带 async fn 回调同理。同步 fn/纯数据/本地 svc 保持同步(既有
     // 语义:parseCmdline 等需要同步返回值)。
     const mk = kinds().get(method)
-    if (hasAsyncFnHandle(serialized) || (mk && mk.fn && mk.async)) {
+    // apply 期间(加载期 registerAll):参数含 async fn 的调用保持同步(异步会让 registerAll 等
+    // 不到注册完成)。运行时(apply 外)才 async(破对话互等)。
+    if (applyDepth === 0 && (hasAsyncFnHandle(serialized) || (mk && mk.fn && mk.async))) {
       return asyncBridgeCall('invokeService', { handle, method, args: serialized })
     }
     return syncBridgeCall('invokeService', { handle, method, args: serialized })
@@ -1512,10 +1514,15 @@ function routeMessage(msg) {
 }
 
 /** fire-and-forget 分发一个 Java → worker 请求(处理是 async,完成时发回复)。 */
+// apply 深度:插件 apply 期间(加载期),参数含 async fn 的跨 worker 调用(投影 register 的
+// apply/init 标 async 后)保持同步 —— 加载期 register 若异步,registerAll(apply)等不到注册
+// 完成 → 卡。运行时(apply 外)才走 asyncBridgeCall(破对话互等)。
+let applyDepth = 0
 function dispatchRequest(msg) {
+  if (msg.type === 'apply') applyDepth++
   handleRequest(msg).then(
-    (resp) => { if (resp) send(resp) },
-    (e) => send({ type: 'error', id: typeof msg.id === 'number' ? msg.id : undefined, message: String(e && e.stack ? e.stack : e) }),
+    (resp) => { if (msg.type === 'apply') applyDepth--; if (resp) send(resp) },
+    (e) => { if (msg.type === 'apply') applyDepth--; send({ type: 'error', id: typeof msg.id === 'number' ? msg.id : undefined, message: String(e && e.stack ? e.stack : e) }) },
   )
 }
 
