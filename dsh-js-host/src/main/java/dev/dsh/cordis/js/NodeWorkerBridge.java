@@ -43,6 +43,9 @@ public final class NodeWorkerBridge {
 
     void ctxId(long id) { this.ctxId = id; }
 
+    /** 包私有:宿主序列化 ctx 句柄时读属主 ctx 的 symbolProps(如 kScope 只读快照)。 */
+    Context context() { return ctx; }
+
     private static Map<String, CommandEntry> resolveCommands(Context ctx) {
         if (ctx == null) return new LinkedHashMap<>();
         synchronized (SHARED_COMMANDS) {

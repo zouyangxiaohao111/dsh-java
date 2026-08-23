@@ -509,18 +509,20 @@ function deserializeValue(v) {
       // M11-6:外部 worker 的 ctx(本地无该 ctxId)→ 创建远程 ctx 代理(makeCtx 经桥路由回
       // 属主 ctx,on/emit/get 与动态成员(agent 等)经 ctxCall 由 Java 核心路由到属主)。
       // ctxId 用每 worker 独立区间(DSH_HANDLE_BASE),跨 worker 不冲突,不会误命中本地 ctx。
-      return makeCtx(v.id)
+      // M12:v.__snap(Java toJsonNode 附的 kScope 只读快照)传入 makeCtx —— scopeOf(ctx)
+      // 首次读 ctx[kScope] 即本地命中,零 symbolGet park。
+      return makeCtx(v.id, v.__snap)
     }
     return c
   }
-  if (v.$kind === 'svc') return makeServiceProxy(v.id)
+  if (v.$kind === 'svc') return makeServiceProxy(v.id, v.__snap)
   if (v.$kind === 'obj' || v.$kind === 'iter') {
     // 自持句柄(本 worker 创建的 live 对象/iterable 视图)读回 → 返回本地对象,免跨桥往返,
     // 也避免"同步泵中调用自身句柄 → Java 转发回本 worker → 泵内延迟 → 死锁"的循环。
     // 外部 worker 的句柄 → Proxy(经 invokeService → Java 转发 invokeObj 回属主 worker)。
     const local = objById.get(v.id)
     if (local !== undefined) return local
-    return makeServiceProxy(v.id)
+    return makeServiceProxy(v.id, v.__snap)
   }
   if (Array.isArray(v)) return v.map(deserializeValue)
   const out = {}
@@ -543,6 +545,7 @@ function deserializeValue(v) {
 // → 互等死锁(invokeFn 120s 超时)。检测到参数含远程句柄时,即使 fn 未标 async 也走 asyncBridgeCall:
 // 调用方事件循环自由,能响应反向调用。
 const REMOTE_MARK = Symbol.for('dsh.remoteHandle')
+let dbgLateCount = 0
 // 泵内 dispatch 深度:泵内分发 invokeObj/invokeFn 等时,direct 处理的消息的 JS 函数若反向
 // syncBridgeCall(嵌套泵),嵌套泵内不得再次 dispatch(会无限嵌套,回复永远读不到)——嵌套泵
 // 把新到消息 deferred,泵只等自己的回复。
@@ -576,12 +579,17 @@ function hasSerializedRemoteHandle(v, depth) {
   return false
 }
 
-function makeServiceProxy(handle) {
+function makeServiceProxy(handle, snap) {
   // M7-8:参数带 liveHandles 序列化 —— 方法参数里的 live 对象(如 llm.registerAdapter 的
   // adapter 类实例)以句柄跨桥,读方可路由回属主调用其方法;纯数据参数不受影响(不强转)。
   // M11-6:同步/异步分流 —— proxy 元操作($members/$get/iterator)必须同步(JS proxy trap
   // 与 for...of 要求同步返回);普通服务方法**异步**(asyncBridgeCall):真实 dsh 服务方法
   // 都是 async(Promise),插件总是 await,异步不阻塞事件循环 → 解除跨 worker 回调链死锁。
+  // M12(snap 参数):Java 侧 toJsonNode 把事件参数里 live 对象(Fiber)的只读字段(state/uid/entry)
+  // 作为 __snap 附带在 {$kind:'svc'} 句柄上。get trap 先查本地快照,命中即返回快照值(零
+  // syncBridgeCall park)—— 这是跨 worker 互等 + 事件风暴池耗尽的根因解(回调读 fiber.state/
+  // entry?.options.name 不再 park 事件循环)。快照 miss(方法/未快照字段)走原 bridge 路径,
+  // 保持 live 语义(值化会破坏 fiber.ctx.get/fiber.parent 等方法面,故保留 live 代理)。
   const invokeSync = (method, args) =>
     syncBridgeCall('invokeService', { handle, method, args: args.map(x => serializeValue(x, undefined, { liveHandles: true })) })
   // M11-6:参数带 async fn 回调(如 agents.create 的 setup)→ 异步(防跨 worker 同步回调链
@@ -652,6 +660,13 @@ function makeServiceProxy(handle) {
       }
       if (typeof prop === 'symbol') return undefined
       const name = String(prop)
+      // M12:本地值快照 —— 事件参数里 live 对象(Fiber)的只读字段(state/uid/entry)由 Java 侧
+      // toJsonNode 作为 __snap 附带。get trap 必须先查快照:命中即返回快照值(本地,零 park)。
+      // 快照值再经 deserializeValue 展开(嵌套 live 对象仍句柄化,方法与成员面保留)。快照 miss
+      // (方法/未快照字段)走原 bridge 路径,保持 live 语义。
+      if (snap !== undefined && Object.prototype.hasOwnProperty.call(snap, name)) {
+        return deserializeValue(snap[name])
+      }
       // getter/数据字段成员 → 直接读值(invokeService '$get' → invokeGet 触发 getter)。
       const k = kinds().get(name)
       if (k && !k.fn) return invokeSync('$get', [name])
@@ -728,6 +743,10 @@ function syncBridgeCall(type, payload) {
   const id = ++bridgeSeq
   send(Object.assign({ type, id }, payload))
   const deadline = Date.now() + SYNC_PUMP_TIMEOUT_MS
+  if (process.uptime() > 20 && dbgLateCount++ < 40) {
+    const h = payload && (payload.handle ?? payload.ctx ?? payload.method ?? payload.name ?? '')
+    process.stderr.write('[DG-LATE] ' + type + ' h=' + JSON.stringify(h) + '\n' + new Error().stack.split('\n').slice(1, 5).join('\n') + '\n')
+  }
   for (;;) {
     const line = takeLineSync()
     if (line === null) throw new Error('java bridge: stdin closed while awaiting reply')
@@ -879,7 +898,14 @@ function makeFiberProxy(ctxId) {
 }
 
 // ---- ctx shim(与 ctx.js 同一契约面)----
-function makeCtx(ctxId) {
+function makeCtx(ctxId, snap) {
+  // M12:跨 worker ctx 只读本地化。symbolCache 缓存首次 symbolGet 的只读 symbol(kScope);
+  // nameCache 缓存稳定句柄形服务(ctx.get 返回跨 worker live 代理)。两缓存使 boot 期
+  // scopeOf(ctx)=ctx[kScope] 与运行期 ctx.get('sessions') 重复读零 syncBridgeCall park,
+  // 并固定对象身份(scoped Map 键一致,消除重复 symbolGet 新对象身份失配/静默重放)。
+  // snap 为 Java toJsonNode 附的 __snap 只读快照(首次读即本地,零往返)。
+  const symbolCache = new Map()
+  const nameCache = new Map()
   // logger 既可当函数调用(ctx.logger('agents') → 命名 logger),也带方法属性
   // (AgentRegistry 直接读 this.ctx.logger.warn(...) 的无 name 调用)。两者都经桥
   // 转发到 Java Logger 格式化层(见 makeLogger)。
@@ -1122,9 +1148,29 @@ function makeCtx(ctxId) {
         // M11-7:symbol 属性(如 dsh-scope 的 kScope —— scopeOf(agentCtx) 读 ctx[kScope])
         // 经 ctxCall symbolGet 路由回属主 ctx 的 symbolProps(createScope 经
         // extend({[kScope]: key}) 存入)。跨 worker 的 agentCtx 远程代理由此读到 scope key。
-        return syncBridgeCall('ctxCall', { ctx: ctxId, method: 'symbolGet', args: [String(prop.description || prop)] })
+        // M12:先查本地快照(Java toJsonNode 附的 __snap,首次读零 park),再查 symbolCache
+        // (首次 symbolGet 后本地,固定对象身份 —— 每次 symbolGet 反序列化新对象会使
+        // ScopedLayers 的 scoped Map 键失配 → createLayer 恒真 + 每 effect 泄漏)。kScope
+        // 是 createScope 时写入的静态值,缓存安全。symbolGet 跨 worker 同步 pump park 是
+        // boot 期 web↔core 互等根因之一,缓存后重复读零 pump。
+        const desc = String(prop.description || prop)
+        if (snap !== undefined && Object.prototype.hasOwnProperty.call(snap, desc)) {
+          return deserializeValue(snap[desc])
+        }
+        if (symbolCache.has(desc)) return symbolCache.get(desc)
+        const sv = syncBridgeCall('ctxCall', { ctx: ctxId, method: 'symbolGet', args: [desc] })
+        symbolCache.set(desc, sv)
+        return sv
       }
-      return ctx.get(String(prop))
+      const nm = String(prop)
+      if (nameCache.has(nm)) return nameCache.get(nm)
+      const gv = ctx.get(nm)
+      // M12:稳定句柄形服务(ctx.get 返回跨 worker live 代理,如 workspace 的 'sessions')
+      // 缓存 —— 运行期重复读(sessionKnown/readSessionHeader/attach/archive)本地命中,零
+      // pump。只缓存句柄形(REMOTE_MARK 远程代理),绝不缓存 undefined/纯量(服务可能稍后
+      // 才 provide;纯数据属性动态可变)。
+      if (gv !== null && gv !== undefined && isRemoteHandle(gv)) nameCache.set(nm, gv)
+      return gv
     },
     has(target, prop) {
       return typeof prop === 'symbol' ? Reflect.has(target, prop) : true

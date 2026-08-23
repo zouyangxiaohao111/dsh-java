@@ -240,9 +240,11 @@
 - id: plan-mode
   group: core
 - id: token-meter
-  group: web
-  # M11-8:token-meter 注入 sessionProjections —— 与投影系统同 worker(web 组),避免跨
-  # worker 同步读投影状态互等死锁。
+  group: core
+  # M11-8 移 web 组引入加载期死锁(register 的 ctx.get sessionProjections 跨 worker 同步,
+  # 与 core apply 互等 → boot 后自动冻结)。回 core 组:register 时 ctx.get 本地(core 的
+  # sessionProjections 代理经 provide 句柄化),读 session 本地。对话运行时 token-meter 读
+  # session.events 本地(core),避免跨 worker。
 - id: compaction-basic
   group: core
 - id: command-compact

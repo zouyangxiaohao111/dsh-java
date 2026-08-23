@@ -174,6 +174,80 @@ class NodeWorkerJsHostTest {
         root.fiber.dispose().join();
     }
 
+    /**
+     * M12:事件参数里 live 对象(Fiber)的只读字段快照。Java 侧 toJsonNode 把 fiber.state/uid/entry
+     * 作为 __snap 附带在 svc 句柄上,worker 侧 makeServiceProxy 的 get trap 先查本地快照命中即返回
+     * (零 syncBridgeCall park) —— 这是跨 worker 互等 + 事件风暴池耗尽的根因解。本测试验证 JS
+     * 监听器读 fiber.state/uid/entry 走快照路径返回正确值且不悬挂(非快照字段仍走 live 桥)。
+     */
+    @Test
+    void eventArgFiberSnapshotReadableFromJs() throws Exception {
+        Path plugin = writePlugin("fiber-snap.cjs", """
+                module.exports = { apply(ctx) {
+                  ctx.on('test/fiber', (fiber) => {
+                    const entry = fiber.entry;
+                    ctx.emit('fiber-snap', [fiber.state, fiber.uid, entry == null ? 'null' : entry.options.name]);
+                  });
+                } }
+                """);
+        Context root = new Context();
+        AtomicReference<String> got = new AtomicReference<>();
+        root.on("fiber-snap", (c, args) -> { got.set(String.valueOf(args[0])); return null; });
+        try (JsHost host = new NodeWorkerJsHost()) {
+            root.plugin(new JsPluginAdapter(host, host.loadModule(plugin)), null);
+            // root.fiber(uid=0, state=ACTIVE=2, entry=null)—— 事件参数经 toJsonNode 附带 __snap
+            root.emit("test/fiber", root.fiber);
+            // fiber.state → 快照 2;fiber.uid → 快照 0;fiber.entry → 快照 null → 'null'
+            assertThat(got.get()).contains("2").contains("0").contains("null");
+        }
+        root.fiber.dispose().join();
+    }
+
+    /**
+     * M12:跨 worker ctx 句柄携带 kScope 只读快照。createScope 同形 —— worker 经
+     * ctx.extend({[Symbol('dsh.scope')]: key}) 把 scope key 存进 Java Context.symbolProps;
+     * ctx 句柄经桥往返(worker → Java NodeRef → toJsonNode)时,Java 侧给 ctx 附
+     * __snap{dsh.scope},worker 侧 makeCtx 的 symbol get trap 先查快照命中即返回(零
+     * syncBridgeCall symbolGet park)。这是 boot 期 scopeOf(ctx)=ctx[kScope] 跨 worker
+     * 互等死锁的根因解。本测试验证完整链路:extend 存 key → ctx 跨桥 → toJsonNode 附快照
+     * → worker 读 ctx[K] 本地命中返回原 key。
+     */
+    @Test
+    void ctxKScopeSnapshotReadableFromJs() throws Exception {
+        Path plugin = writePlugin("ctx-snap.cjs", """
+                module.exports = { apply(ctx) {
+                  const K = Symbol('dsh.scope');
+                  const scopeKey = { kind: 'scope' };
+                  const child = ctx.extend({ [K]: scopeKey });
+                  ctx.on('probe', (c) => {
+                    const got = c[K];
+                    ctx.emit('probe-result', got && got.kind === 'scope' ? 'snap-ok' : 'snap-miss:' + String(got));
+                  });
+                  ctx.emit('ready', child);
+                } }
+                """);
+        Context root = new Context();
+        AtomicReference<String> got = new AtomicReference<>();
+        root.on("probe-result", (c, args) -> { got.set(String.valueOf(args[0])); return null; });
+        try (JsHost host = new NodeWorkerJsHost()) {
+            AtomicReference<Object> child = new AtomicReference<>();
+            root.on("ready", (c, args) -> {
+                child.set(args[0]); // child ctx 的 NodeRef(kind='ctx')
+                return null;
+            });
+            root.plugin(new JsPluginAdapter(host, host.loadModule(plugin)), null);
+            // 等 worker 把 child ctx 传回(apply 异步),再由测试主动触发 probe —— 避免在
+            // apply 期同步链里嵌套事件转发(时序不稳)。Java root.emit(probe, ctxRef) 经
+            // toJsonNode 附 __snap,worker 读 c[K] → __snap['dsh.scope'] 本地命中 → 'snap-ok'
+            // (而非 symbolGet 往返后 miss)。
+            for (int i = 0; i < 200 && child.get() == null; i++) Thread.sleep(10);
+            assertThat(child.get()).isNotNull();
+            root.emit("probe", child.get());
+            assertThat(got.get()).isEqualTo("snap-ok");
+        }
+        root.fiber.dispose().join();
+    }
+
     @Test
     void processCrashFailsOperationsCleanly() throws Exception {
         Path plugin = writePlugin("p.cjs", "module.exports = { apply(ctx, config) { ctx.on('go', () => {}); } }");

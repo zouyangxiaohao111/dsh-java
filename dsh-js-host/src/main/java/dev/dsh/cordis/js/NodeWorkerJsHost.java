@@ -872,6 +872,23 @@ public final class NodeWorkerJsHost implements JsHost {
             // M11-7:fn 的 async 标记跨 worker 转发保留(读方 remote stub 据此分流
             // async fn → 异步调用,同步 fn → 同步)。
             if ("fn".equals(ref.kind()) && ref.async()) n.put("async", true);
+            // M12:ctx 句柄跨 worker 附 kScope 只读快照。scopeOf(ctx)=ctx[kScope](dsh-scope)
+            // 读属主 ctx.symbolProps(createScope 经 extend({[kScope]:key}) 存入,沿 parent 链
+            // 继承)。跨 worker 时每次 symbolGet 都 syncBridgeCall park 事件循环 —— boot 期
+            // web(workspace)↔core(scope/system-prompt)互等根因之一。附 __snap 后 worker 侧
+            // makeCtx get trap 先查快照,零 park。scope 值为纯字符串时零往返;对象值句柄化
+            // (worker 侧 deserializeValue 展开),身份一致性由 makeCtx symbolCache 保证。
+            if ("ctx".equals(ref.kind())) {
+                NodeWorkerBridge b = bridges.get(ref.id());
+                if (b != null) {
+                    Object scope = b.context().getSymbol("dsh.scope");
+                    if (scope != null) {
+                        ObjectNode snap = mapper.createObjectNode();
+                        snap.set("dsh.scope", toJsonNode(scope));
+                        n.set("__snap", snap);
+                    }
+                }
+            }
             return n;
         }
         // M7-7:JS 侧句柄原样回传(JsIterable 也是 Iterable,必须先于 Iterable 物化判定)。
@@ -906,6 +923,25 @@ public final class NodeWorkerJsHost implements JsHost {
         // ctx.agents 既有 .list() 方法又可被 for...of 遍历)。数组同样物化。
         if (value instanceof Collection<?> c) return toJsonArray(c);
         if (value instanceof Object[] arr) return toJsonArray(List.of(arr));
+        // M12:事件参数里 live 对象(Fiber)携带只读字段快照。事件回调读 fiber.state /
+        // fiber.entry?.options.name / fiber.uid 走 makeServiceProxy 的 get trap —— 若无快照,
+        // $get/$members 无条件 syncBridgeCall(park 事件循环),事件风暴下跨 worker 转发池耗尽 →
+        // webserver 冻结。附带 __snap 后,worker 侧 get trap 先查本地快照命中即返回,零 park。
+        // 快照值经 deserializeValue 展开;非快照字段(方法/ctx/parent)仍走 bridge 保留 live 语义
+        // (值化整个 fiber 会破坏 fiber.ctx.get/fiber.parent.fiber 等方法面,故不采用)。
+        // entry 恒 null(Java 核心 owns 加载,worker 侧无自建条目;fiber.entry?.options.name 短路);
+        // 若未来 populate entry(.options.name 读链),此快照需扩展(如反射解析 entry.options.name)。
+        if (value instanceof dev.dsh.cordis.Fiber f) {
+            ObjectNode n = mapper.createObjectNode();
+            n.put("$kind", "svc");
+            n.put("id", registerService(f).id());
+            ObjectNode snap = mapper.createObjectNode();
+            snap.put("state", f.state.ordinal());
+            snap.put("uid", f.uid);
+            if (f.entry == null) snap.putNull("entry");
+            n.set("__snap", snap);
+            return n;
+        }
         // 其他 Java 对象 → 远程服务句柄(worker 侧经 Proxy 反射调用)
         return toJsonNode(registerService(value));
     }
