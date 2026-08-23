@@ -27,7 +27,7 @@
   # worker). M7-8 already established typert as client-only; pinned here.
 
 - id: typert-gateway
-  group: web
+  group: core
   priority: true
   # typert client API gateway (@deepseek-ai/dsh-api-gateway)。M8-1 pin disabled 是
   # 误判("用 apiproxy 代替")—— 其 client 半是 client 端 `remote` 服务的唯一提供者
@@ -45,25 +45,25 @@
 # 纯服务行(storage/workspace/session-stats 等)与 base 覆盖行(tools/工具)不在组内,
 # 服务经 provide 句柄化跨 worker 调用,不需要同 worker。
 - id: webserver
-  group: web
+  group: core
 - id: web-runtime
-  group: web
+  group: core
 - id: modules
-  group: web
+  group: core
 - id: connection
-  group: web
+  group: core
 - id: api-gateway
-  group: web
+  group: core
 - id: api-remotes
-  group: web
+  group: core
 - id: cordis-host-runner
-  group: web
+  group: core
 - id: web-startup
-  group: web
+  group: core
 - id: client-runtime
-  group: web
+  group: core
 - id: cordis-client-runner
-  group: web
+  group: core
 - id: agent-presets
   group: core
   config:
@@ -84,13 +84,13 @@
 # ui-* 客户端模块行:modules 扫描它们进 __DSH_BOOT__ 并按 /plugins/<id>/client.js 服务;
 # 同 worker 保证客户端模块本地可服务(不走跨 worker req/res)。
 - id: ui-theme
-  group: web
+  group: core
 - id: ui-layout
-  group: web
+  group: core
 - id: ui-sidebar
-  group: web
+  group: core
 - id: ui-settings
-  group: web
+  group: core
 - id: ui-settings-general
   group: core
   # M11-4:注册 ui-onboarding(欢迎弹窗确认的持久化 namespace)。server 半只依赖 settings;
@@ -98,49 +98,49 @@
   # (可调用函数)经桥 $call 句柄失效 → register resolve 抛 → namespace 未注册 → welcome
   # "暂时无法保存确认状态"。client 半仍进 __DSH_BOOT__(modules 扫描 loader 级,不受 group 影响)。
 - id: ui-settings-models
-  group: web
+  group: core
 - id: ui-settings-plugin-inventory
-  group: web
+  group: core
 - id: ui-conversation
-  group: web
+  group: core
 - id: ui-tool
-  group: web
+  group: core
 - id: ui-cordis
-  group: web
+  group: core
 - id: ui-workflow-run
-  group: web
+  group: core
 - id: ui-deliverables
-  group: web
+  group: core
 - id: ui-workspace
-  group: web
+  group: core
 - id: ui-input-trigger
-  group: web
+  group: core
 - id: ui-commands
-  group: web
+  group: core
 - id: ui-skill
-  group: web
+  group: core
 - id: ui-subagent
-  group: web
+  group: core
 - id: ui-jobs
-  group: web
+  group: core
 - id: ui-goal
-  group: web
+  group: core
 - id: ui-message-feedback
-  group: web
+  group: core
 - id: ui-model-selection
-  group: web
+  group: core
 - id: ui-permission
-  group: web
+  group: core
 - id: ui-agent-preset
-  group: web
+  group: core
 - id: ui-settings-plugins
-  group: web
+  group: core
 - id: ui-plan
-  group: web
+  group: core
 - id: ui-user-questions
-  group: web
+  group: core
 - id: ui-trajectory
-  group: web
+  group: core
 
 
 # ── M9-2:base 核心进程组(提速)──────────────────────────────────────────────
@@ -183,10 +183,13 @@
 - id: session-query-sqlite
   group: core
 - id: session-projection
-  group: web
-  # M11-8:投影系统与投影 cache / apiproxy 同 worker(web 组)—— session-projection 在 core
-  # 时 drive 读 web 组的 projection-cache → 跨 worker 同步互等死锁(web 等 core 读 session.id,
-  # core 等 web 执行投影 fn)。同组消除跨 worker 投影读写环。
+  group: core
+  # M11-8 曾移 web 组解决 drive 读 cache 跨 worker,却引入 subagent(core)读 sessionProjections/
+  # sessionProjectionCache 的跨 worker 互等死锁(subagent listChildren 的 prepareListing 读
+  # projections/cache 属性 $members/$get,而 web 组同一时刻 pump 等 subagent 的 list 回复 →
+  # 双向 pump 互等,每 120s 超时循环,webserver 冻结)。M13:投影簇共置 core 组(与 session/
+  # subagent/session-persistence 同 worker)—— 投影注册/驱动/缓存/消费全本地;apiproxy(web)
+  # 消费端 projectionsFor/listProjectionsFor 等异步 await 跨 worker(不 pump,安全)。
 - id: session-telemetry-otel
   group: core
 - id: subprocess
@@ -308,21 +311,24 @@
 
 # ── M9-2:web-app 服务行并入 web 组(减少 worker 数)────────────────────────
 - id: storage
-  group: web
+  group: core
 - id: storage-json
-  group: web
+  group: core
 - id: storage-domain
-  group: web
+  group: core
 - id: message-feedback
-  group: web
+  group: core
 - id: session-log-download
-  group: web
+  group: core
 - id: workspace
-  group: web
+  group: core
 - id: session-projection-cache
-  group: web
+  group: core
+  # M13:投影缓存与 session-projection 共置 core 组(drive 读 cache 本地,消除跨 worker 投影
+  # 读写环;读 storageDomain(web)异步 await 安全)。subagent(core)的 coldSnapshot 读缓存本地。
 - id: session-stats
-  group: web
+  group: core
+  # M13:会话统计与 session 事件同 worker(core),读投影/会话本地。
 - id: directory-picker
   disabled: true
   # M11:web-app bundle 把 directory-picker 指向 auto(@deepseek-ai/dsh-host-directory-picker-auto,
@@ -333,21 +339,21 @@
 - insert:
     - id: directory-picker-browse
       name: '@deepseek-ai/dsh-host-directory-picker-browse'
-      group: web
+      group: core
       # M11-3:后端用 browse 而非 native —— host.listDirectory 要求 capability.kind ===
       # 'browse'(api-proxy.ts:2913);native 只有 pick(打开 OS 对话框),点击"添加工作区"
       # → 目录浏览 host.listDirectory → "needs the browse capability" → HTTP 404 → 无法
       # 创建首个工作区。browse 后端零依赖(node:fs 列目录),capability = browse。
     - id: ui-directory-picker-browse
       name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
-      group: web
+      group: core
       # M11-2:directory flow 槽的 client 占用者 —— M11-1 禁用 auto 后它不再被 create 进
       # loader,client 端无 "添加工作区" 入口 → 无工作区 + 无添加 → 工作区菜单空 → 点击无
       # 反应(用户"选择工作区没法选")。作为 loader entry 启用,ClientModuleRegistry 扫进
       # manifest,client 端激活注入 conversation.hero.workspace.directoryFlow slot → 菜单出现
       # "添加工作区",用户可浏览目录创建首个工作区。
 - id: plugin-inventory
-  group: web
+  group: core
 
 
 

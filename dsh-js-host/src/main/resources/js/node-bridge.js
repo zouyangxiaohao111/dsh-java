@@ -899,13 +899,10 @@ function makeFiberProxy(ctxId) {
 
 // ---- ctx shim(与 ctx.js 同一契约面)----
 function makeCtx(ctxId, snap) {
-  // M12:跨 worker ctx 只读本地化。symbolCache 缓存首次 symbolGet 的只读 symbol(kScope);
-  // nameCache 缓存稳定句柄形服务(ctx.get 返回跨 worker live 代理)。两缓存使 boot 期
-  // scopeOf(ctx)=ctx[kScope] 与运行期 ctx.get('sessions') 重复读零 syncBridgeCall park,
-  // 并固定对象身份(scoped Map 键一致,消除重复 symbolGet 新对象身份失配/静默重放)。
-  // snap 为 Java toJsonNode 附的 __snap 只读快照(首次读即本地,零往返)。
-  const symbolCache = new Map()
-  const nameCache = new Map()
+  // M12:跨 worker ctx 只读本地化(snap)。snap 为 Java toJsonNode 附的 __snap 只读快照
+  // (kScope 等静态 symbol 字段),scopeOf(ctx)=ctx[kScope] 首次读即本地命中,零
+  // syncBridgeCall park。无快照字段走原 bridge 路径保 live 语义。此前尝试的
+  // symbolCache/nameCache 缓存引入 subagent register 跨 worker 挂起,已移除。
   // logger 既可当函数调用(ctx.logger('agents') → 命名 logger),也带方法属性
   // (AgentRegistry 直接读 this.ctx.logger.warn(...) 的无 name 调用)。两者都经桥
   // 转发到 Java Logger 格式化层(见 makeLogger)。
@@ -1157,20 +1154,14 @@ function makeCtx(ctxId, snap) {
         if (snap !== undefined && Object.prototype.hasOwnProperty.call(snap, desc)) {
           return deserializeValue(snap[desc])
         }
-        if (symbolCache.has(desc)) return symbolCache.get(desc)
-        const sv = syncBridgeCall('ctxCall', { ctx: ctxId, method: 'symbolGet', args: [desc] })
-        symbolCache.set(desc, sv)
-        return sv
+        // M12-结论:不再缓存(定位 subagent register 挂起后移除)。__snap 已覆盖 kScope
+        // 首次读本地(Java toJsonNode 附快照),零 pump;无快照的 ctx 走 symbolGet(跨 worker
+        // 一次 pump,可接受)。缓存(尤其首次读到空/句柄形值)曾引入 register 跨 worker 挂起。
+        return syncBridgeCall('ctxCall', { ctx: ctxId, method: 'symbolGet', args: [desc] })
       }
-      const nm = String(prop)
-      if (nameCache.has(nm)) return nameCache.get(nm)
-      const gv = ctx.get(nm)
-      // M12:稳定句柄形服务(ctx.get 返回跨 worker live 代理,如 workspace 的 'sessions')
-      // 缓存 —— 运行期重复读(sessionKnown/readSessionHeader/attach/archive)本地命中,零
-      // pump。只缓存句柄形(REMOTE_MARK 远程代理),绝不缓存 undefined/纯量(服务可能稍后
-      // 才 provide;纯数据属性动态可变)。
-      if (gv !== null && gv !== undefined && isRemoteHandle(gv)) nameCache.set(nm, gv)
-      return gv
+      // M12-结论:不再缓存 ctx.get 服务句柄(定位 subagent register 挂起后移除)。
+      // 每次经桥 get(服务句柄路由稳定),无缓存引入的失效/身份风险。
+      return ctx.get(String(prop))
     },
     has(target, prop) {
       return typeof prop === 'symbol' ? Reflect.has(target, prop) : true
